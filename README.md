@@ -1,119 +1,42 @@
-#Java* Fuzzer for Android* 
+#Java* Fuzzer test generator
 
-Java* Fuzzer for Android* is a random Java tests generator intended to run on Android VM (Dalvik, ART). The tool compares the result of execution using JIT/AOT/interpreter modes or Java VM that allows to detect crashes, hangs and incorrect calculations. The main idea of the tool is to generate hundreds of thousands small random tests cover various cases using pre-defined test generator heuristics and provide a strong testing for Java VM compiler and runtime.
+Java* Fuzzer test generator is a random Java tests generator. It is derived from Java* Fuzzer for Android* (https://github.com/android-art-intel/Fuzzer), adapted for desktop/server Java environment on Linux and extended to cover more Java syntax features (class inheritance, complex loop patterns, improved exception throwing patterns, etc). The tool compares the result of execution in JIT mode with interpreter mode or reference Java VM that allows to detect crashes, hangs and incorrect calculations. The main idea of the tool is to generate hundreds of thousands small random tests and to cover various cases using pre-defined test generator heuristics and provide a strong testing for Java VM compiler and runtime.
 
 ## Table of contents
 1. [Setup and maintenance](#setup-and-maintenance)
-2. [Android host build structure](#android-host-build-structure)
-3. [Tool files descrption](#the-tool-files-description)
+2. [Tool files descrption](#the-tool-files-description)
     1. [Scripts](#scripts)
     2. [Java sources](#java-source-files)
     3. [Ruby sources](#ruby-source-files)
-4. [Weekly manual testing](#weekly-manual-testing)
-   1. [How to run the tool](#how-to-run-the-tool)
-5. [MM extension manual testing](#mm-extension-manual-testing)
-6. [Running tests on device](#running-tests-on-device)
-7. [Running tests in JIT_PROFILE mode on device](#running-tests-in-jit_profile-mode-on-device)
-8. [Authors](#authors)
+3. [How to run the tool](#how-to-run-the-tool)
+4. [MM extension](#mm-extension)
+5. [Basic configuration file settings](#basic-configuration-file-settings)
+6. [Known issues](#known-issues)
+7. [Authors](#authors)
 
 ## Setup and maintenance
 
-Prepare the environment:
+Prepare environment:
 - Software:
-  - JDK version 7 or higher
+  - Linux, bash version 4.1.2 or later
+  - Reference JDK version 6 or higher
   - Ruby version 1.8.7 or higher
-  - Android SDK version 22 or higher
-  - Apache ANT version 1.8.2 or higher
-- Environment variables:
-  - ANDROID_SDK_ROOT should point to the Android SDK location
-  - JAVA_HOME should point to the JDK location
-  - ANT_HOME should point to the apache ant location
-- Ensure that **dx** tool from Android SDK is located in 
-*$ANDROID_SDK_ROOT/platform-tools/* directory. If not, create a
-symlink *$ANDROID_SDK_ROOT/platform-tools/dx* and point it to the dx 
-tool from Android SDK build tools
-- Run **./compile_utilities.sh** script
-- Set the environment variables in the scripts:
-  - common.sh
-    - RUN_DIR = \<Path to store the local copy of Fuzzer\>
-    - FILER_DIR = \<Path where the original Fuzzer is located\>
-    - HOME_DIR = \<Path to local host builds, called $HOST_BUILDS in this readme\>
-  - install_build_manual.sh
-    - BUILDS_DIR = \<The same as above, directory to local host 
-    builds, called $HOST_BUILDS in this readme\>
-  - p.sh
-    - FUZZER_ROOT_DIR = \<The same as FILER_DIR, path to the original Fuzzer\>
-  - install_build.sh
-    - WEBSHARE_BUILDS_DIR = \<Path to stored and archived builds\>
-  - mrt.sh
-    - ADDRESS = \<email address to send notifications to\> 
+- Set environment variables in common.sh script or through environment variables export:
+  - REFERENCE_JAVA_HOME should point to the reference JDK location
+  - JAVA_UNDER_TEST should point to the java binary to be tested (\<JDK under test location\>/bin/java)
+  - Make sure ruby binary can be found in PATH
+- If necessary, set additional environment variables in common.sh script or through environment variables export:
+  - (optional, default value 300 seconds if not set) TIME_OUT specifies time in seconds for a test to be killed by timeout
+  - (optional, empty if not set) JAVA_UNDER_TEST_OPTS=\<list of options to be passed to java to be tested\>
+  - (optional, empty if not set) JAVA_REFERENCE_OPTS=\<list of options to be passed to reference java\>
+  - (optional, empty if not set) JAVAC_OPTS=\<list of options to be passed to javac compiler\>
+  - (optional, empty if not set) IGNORE_DEBUG_OUTPUT_PATTERNS=\<patterns to be ignored when comparing reference java output with java under test output\>. E.g., '.*CompilerOracle.*' or other warnings/verbose VM ouput patterns
+  - (optional, empty if not set) MM="true" if you specify a multi-threaded configuration mode (see details in "MM extension" section)
 - Speedup opportunity
   - If you have a RAM disk, you can mount it to */export/ram* and the Fuzzer will 
-  automatically use it for temp files, which gives a significant speedup.
+  automatically use it for temp files, which gives some speedup.
 
-## Android host build structure
-
-For configuring the Android OS building environment, refer to 
-[the link](https://source.android.com/source/index.html)
-
-To make the Android host build, follow the steps from 
-[android sources site](https://source.android.com/source/building.html) 
-to build the image for emulator and add the following arguments for make command:
- 
-For 32-bit host build:
-`WITH_HOST_DALVIK=true build-art-host libarttest_32 libnativebridgetest_32 
-jasmin smali dexmerger hprof-conv`
-
-For 64-bit host build:
-`WITH_HOST_DALVIK=true BUILD_HOST_64bit=1 build-art-host libarttest libnativebridgetest jasmin smali dexmerger hprof-conv`
-
-The structure of the build:
-
-- \<top directory\> &larr; $ANDROID_BUILD_TOP should point here
-  - out
-    - host
-      - common
-        - obj
-          - JAVA_LIBRARIES
-      - linux-x86
-        - bin
-        - lib
-        - lib32
-        - lib64
-        - usr
-        - framework
-
-After you performed the build, copy and compress to \<build-name\>_host.tgz archive the host 
-build files from the tree above. Eventually, you should get the following structure:
-- \<other top directory\> &larr; $WEBSHARE_BUILDS_DIR should point here
-  - *branch1*
-    - *build1*
-      - aosp_x86-userdebug
-        - WW10_host.tgz &larr; The archive with 32-bit build you've prepared
-          - out
-            - ...
-      - aosp_x86_64-userdebug
-        - WW10_host.tgz &larr; The archive with 64-bit build you've prepared
-          - out
-            - ...
-    - *build2*
-      - ...
-  - *branch2*
-    - *build1*
-      - ...
-
-After you run `./install_build.sh branch1 build1` you should get the following:
-- \<some other directory\> &larr; $HOST_BUILDS should point here
-  - *branch1*
-    - *build1*
-      - HOST-userdebug
-        - out
-          - ...
-      - HOST_64-userdebug
-        - out
-          - ...
-
-## The tool files description
+## Tool files description
 
 ### Scripts
 
@@ -123,155 +46,143 @@ generated tests
 in multiple processes
 - rt.sh                   - runs Fuzzer tool and generated tests in a loop; re-runs 
 generated tests in a given dir
-- c.sh                    - runs Fuzzer-generated single test
-- e.sh                    - runs experiments on Fuzzer-generated tests disabling 
-optimization passes
-- stat.sh                 - runs Fuzzer-generated tests on a set of Android builds
-- sort.pl                 - combines results of e.sh and stat.sh in a single document
-- p.sh                    - generates .tgz file with failing tests and run.sh for 
-attaching it to a bug report
-- run.sh                  - runs the tests being attached to a bug report
-- install_build.sh        - installs the host build to a local machine from predefined 
-location with builds. Usage: **./install_build.sh aosp-master WW10**
-- install_build_manual.sh - installs the host build to a local machine from any 
-location. Usage: **./install_build.sh \<general-path-to-builds\>/aosp-master/WW10**
-- build-apk.sh            - builds and signs an apk with generated tests
 
 ### Java source files
 
 - rb/FuzzerUtils.java
   - superclass for all generated tests; includes methods for initializing
 arrays and calculating check sums
-- rb/Test.java
-  - simple class for getting all available compiler passes names, if possible
-- apk/Fuzzer/src/com/intel/fuzzer/MainActivity.java
-  - The entry point for running Fuzzer tests on device in JIT profile mode
-- apk/Fuzzer/src/com/intel/fuzzer/TestRunner.java
-  - Class to run the tests on a device in any mode (Commandline or from Activity)
 
 ### Ruby source files
 
-- Fuzzer.rb - the entry point of the tool
+- Fuzzer.rb - The entry point of the tool
 - Basics.rb - Core abstractions described here (JavaClass, Array, Variable, Context).
 - Config.rb - Fuzzer configuration, importing from YML files. 
 - Statements.rb  - General Java statements generation
-- ControlFlow.rb - *if-then-else*, *switch-case*, *continue-brake* statements support
+- ControlFlow.rb - *if-then-else*, *switch-case*, *continue-break* statements support
 - Exceptions.rb - Java exceptions and try-catch statements generation 
 - Loops.rb      - loops statements
 - Methods.rb    - Java Methods generation
 - LibMethods.rb - special cases for Java Methods generation
 - Vectorization.rb - Special cases for testing vectorization
 
-## Weekly manual testing
+## How to run the tool
 
-Testing is performed on linux hosts.
-Builds should be located in $HOST_BUILDS directory: **$HOST_BUILDS/$BRANCH/$BUILD**, 
-e.g. **$HOST_BUILDS/aosp-master/WW10**
+1. Set required and optional environment variables as described in "Prepare environment" section
+2. Create results directory  \<results dir\>
+3. Examples of run commands:
+  Single process runs:
 
-Steps before starting a test run:
-1. Unpack and copy the target builds to $HOST_BUILDS/$BRANCH/$BUILD/HOST[_64]-usedrebug
-2. Check HOME_DIR, RUN_DIR, FILER_DIR, SAVE_PASSED and DEVICE_MODE variables in common.sh
-3. Set BRANCH, BUILD, BITS variables to match the build you want to test
-4. Set ADDRESS variable in mrt.sh script (an email address to sent notifications to)
-5. On a target machine:
-`nice bash ./mrt.sh -R <results dir> -NT <number of tests for each thread> -NP <number of threads> -P <prefix> -A -i`
+  `bash ./rt.sh -r results -p test -sp -conf config.yml 1000`
+
+  This command launches Fuzzer process that generates 1000 tests and runs them on reference and tested java and compares outputs. All tests are stored in the *results* dir in *passes*, *crashes*, *fails*, and *hangs* sub-dirs, test directory name prefix is "test".
+  
+  Multiple concurrent processes runs:
+
+  `bash ./mrt.sh -NP 10 -NT 4000 -P test -R results-1`
     
-Add option `-S <number of hosts>` for the run on one host if you want to collect statistics and sort results.
+  This command launches 10 Fuzzer processes, each of them generates 4K tests and runs them on reference and tested java and compares outputs. All the failed tests are stored in the *results-1* dir in crashes, fails, and hangs sub-dirs. 
 
-### How to run the tool
+  Another typical commands examples:
 
-Examples of running Fuzzer cycles:
-`nice bash ./mrt.sh -NP 10 -NT 4000 -P t -R res/aosp-master/32`
-    
-Launches 10 processes, each of them generates 4K tests and runs them on an Android 
-host build one by one. All the failed tests are stored in the *res/aosp-master/32* 
-dir in crashes, fails, and hangs sub-dirs. Location of the Android build is specified 
-by common.sh file. After the test runs are complete, statistics on the ART optimization 
-passes and available builds are generated with e.sh, stat.sh, and sort.sh scripts for 
-the tests from the crashes, fails, and hangs sub-dirs; resulting sorted files are 
-placed in the *res/aosp-master/32* dir.
+  `bash ./mrt.sh -R results-1 -NT 10 -P build1-jdk8- -A -conf config.yml -sp
 
-Typical commands for a weekly run:
+  This command launches 10 processes, each of them generates unlimited number of tests till the script is killed using configuration file \<Fuzzer tool location\>/rb/config.yml, test directory prefix is set build1-jdk8- (suffix is a combination of process counter and test counter).
 
-On the first linux host: `nice bash ./mrt.sh -R res/aosp-master-WW10/32 -NT 40000 -NP 12 -P a -S 1 -A -i -bb 32`
+  Explanation of arguments used here:
 
-On the second linux host: `nice bash ./mrt.sh -R res/aosp-master-WW10/64 -NT 40000 -NP 12 -P b -S 1 -A -i -bb 64`
+  mrt.sh args:
 
-Explanation of arguments used here:
+  | Arg  | Meaning | 
+  | ---- | ------- |
+  | -R   |  Save the results to the specified directory |
+  | -NT  | Number of tests to generate by each thread  |
+  | -NP  | Number of processes - can be omitted, then rt.sh argument will be used|
+  | -P   | Prefix for the test names |
+  | -A   | Pass the rest arguments to rt.sh script |
 
-| Arg  | Meaning | 
-| ---- | ------- |
-| -R   |  Save the results to the specified directory |
-| -NT  | Number of tests to generate by each thread  |
-| -NP  | Number of processes |
-| -P   | Prefix for the test names |
-| -S 1 | Collect the results statistics, tests were run on 1 host |
-| -A   | Pass the rest arguments to rt.sh script |
-| -i   | Compare the tests output with interpreter |
-| -bb \<number\> | Test the 32 (64) bit build |
+  rt.sh args:
 
-To run the testing in JIT mode:
-
-On the first linux host: `nice bash ./mrt.sh -R res/aosp-master-WW[num]/32-jit -NT 40000 -NP 12 -P a -S 1 -A -i -bb 32 -jit`
-
-On the second linus host: `nice bash ./mrt.sh -R res/aosp-master-WW[num]/64-jit -NT 40000 -NP 12 -P b -S 1 -A -i -bb 64 -jit`
+  | Arg                  | Meaning | 
+  | -------------------- | ------- |
+  | -r \<dir\>           |  Save the results to the specified directory |
+  | -p \<prefix string\> | Prefix for the test names |
+  | -sp                  | save all tests incuding passed tests (by default only failed tests directories are kept |
+  | -conf \<yml file\>   | Specify configuration file located in \<Fuzzer tool location\>/rb/\<yml file\>  |
+  | \<number\>           | Number of test to be generated, if set to -1 or not specified then unlimited number of tests is generated and run till the script is killed |
 
 
+## MM extension
 
-## MM extension manual testing
+MM (Memory management) extension can be enabled by editing config.yml file. This is a special configuration that generates and runs multi-threaded tests. In this case tests can produce non-deterministic output and reference run comparison is disabled, only crashes (non-zero exit codes) can be caught.
+ - Change the "mode" to "MM_extreme"
+ - Set "max_threads" to a value greater or equal to 1
+ - Set environment variable: export MM="true" (disables result comparison (this is needed for MM_extreme configuration, because generated tests are multi-threaded and could produce non-determenistic output)
+ - *Optional:* Increase TIME_OUT 
+ - *Optional:* Add -Xmx option to JAVA_UNDER_TEST_OPTS and JAVA_REFERENCE_OPTS to allow more memory-intensive tests not to fail with OOM
 
-MM (Memory management) extension can be enabled by editing config.yml file or 
-using configMME.yml settings.
- - Change the "mode" to "MM" or "MM_extreme"
- - **Do not** pass '-d' argument to the Fuzzer.rb script
- - *Optional:* Increase TIMEOUT in common.sh or add -t <new_timeout> to rt.sh script
- - *Optional:* Add -Xmx512m option. This is not a default value, but allows more 
- memory-intensive tests not to fail with OOM
-
-Example: `nice bash ./mrt.sh -NP 8 -NT 10000 -R res/MM_WW10 -A -gc -extreme -conf configMME.yml`
+Example: `bash MM="true" ./mrt.sh -NP 2 -R results_multi_thread -A -conf configMultiThread.yml 10000`
 
 #### Explanation of arguments used here:
 
-| Arg       | Meaning |
-| --------- | ------  |
-| -R        | Save the results to the specified directory |
-| -NT       | Number of tests to generate by each thread |
-| -NP       | Number of processes |
-| -A        | Pass the rest arguments to rt.sh script |
-| -gc       | adds random GC options during run |
-| -extreme  | disables result comparison (this is needed for MM_extreme configuration, because generated tests are multi-threaded and could produce non-determenistic output) |
+| Arg                | Meaning |
+| -------------------| ------  |
+| -R \<dir\>         | Save the results to the specified directory |
+| -NP                | Number of processes |
+| -A                 | Pass the rest arguments to rt.sh script |
 | -conf \<yml file\> | Use \<yml file\> for Fuzzer configuration |
 
-Changes from the user point of view:
- - classes.dex file in the root of Fuzzer is a simple fake test to get the list 
- of optimization passes.
- - If e.sh scripts fails to get the list of passes, it uses the hardcoded one 
- (see the hardcoded list in e.sh)
- - When interpreter is killed due to timeout, current test is skipped, because 
- there is no reference output to compare with
- - When OOM is detected, test failure is ignored. Depending on configuration, 
- MM extension generates such tests sometimes.
 
-The process of evaluation is unchanged. If collecting of statistics is enabled ('-S' option), 
-corresponding stat files are created - fails-sorted.txt, crashes-sorted.txt, etc.
+## Basic configuration file settings
 
-#### Basic MM extension settings (in yml configuration files):
+### General settings
 
-| Parameter | Meaning |
-| --------- | ------- |
-| mode | 'default', 'jit', 'MM' and 'MM_extreme' values are supported. *default* and *jit* modes are used for regular testing, *MM* and *MM_extreme* intensify MM testing|
-| p_big_array | probability of generating an array of size bigger than max_size |
-| min_big_array       | min length of big array |
-| max_big_array       | max length of big array |
-| max_classes         | maximum number of generated classes. The actual number can be bigger due to foreign class fields generation |
-| max_threads         | maximum number of new thread creation. Do not use it! Feature is under development |
-| p_constructor       | probability of non-trivial constructor |
-| max_callers_chain   | maximum length of a chain of methods calling each other. Too big value of this parameter can lead to too long tests execution |
-| p_non_static_method | probability of generated method being not static |
-| p_null_literal      | probability of assigning null to an Object variable |
-| var_types           | different types of variable declaration. |
+| Parameter                    | Meaning |
+| ---------------------------- | ------- |
+| mode                         | 'default', 'MM_extreme' values are supported. | 
+| max_size                     | max length of arrays and loops; should not be less than 10 |
+| max_nested_size              | max total number of iterations of nested loops in mainTest method |
+| max_nested_size_not_mainTest | max total number of iterations of nested loops in methods called from mainTest |
+| min_size_fraction            | possible values \>0, \<1: minimal fraction of max_size to be guaranteed (other fraction is random(max_size-min_size_fraction*max_size) |
+| max_stmts                    | generated statements max count (per method) |
+| max_arr_dim                  | array max dimension |
+| max_meths                    | max count of methods (excluding main) in a class |
+| max_args                     | max count of a method arguments |
+| max_classes                  | max count of classes. The actual number can be greater due to foreign class fields generation |
+| max_threads                  | max count of runThread(Runnable obj) usage |
+| p_constructor                | probability of non-trivial constructor |
+| max_callers_chain            | maximum chain of methods calling each other |
+| p_non_static_method          | probability of non-static method |
+| mainTest_calls_num           | number of mainTest method calls, should be adjusted with compilation threshold |
+| p_extends_class =50          | probability of class extension |
+| p_method_override = 80       | probability that method in child class will override parent method with matching signature |
+| max_num                      | default value 0x10000: 16-bit int + 1 - max int literal |
+| max_exp_depth                | max depth of expression |
+| max_if_stmts                 | max count of statements in if part of if statement |
+| max_el_stmts                 | max count of statements in else part of if statement |
+| max_try_stmts                | max count of statements in try |
+| max_loop_stmts               | max count of statements in a loop |
+| max_loop_depth               | max depth of nested loops |
+| p_unknown_loop_limit = 0     | probability that for loop has an unknown upper limit (random expression as a loop limit) |
+| p_inequality_in_loop_condition | probability that for loop will have != in loop condition |
+| p_loop_iter_num_gt_max_size  | probability that for loop iterations number will be greater than max arrays size |
+| max_object_array_size        | max length of reference type arrays: can be set to a lower value than primitive type arrays to avoid OOM |
+| allow_object_args            | allow objects to be passed as methods arguments, 0: disallow objects to be passed as methods arguments |
+| p_invoc_expr                 | probability of method invocation in expression |
+| p_volatile                   | probability of a variable being volatile |
+| p_else                       | probability of Else in If statement |
+| p_triang                     | probability of induction var in For initial value expr |
+| p_meth_reuse                 | probability of re-using known meth in an invocation |
+| p_return                     | probability of return statement |
+| p_var_reuse                  | probability of reusing existing var or arr |
+| p_class_reuse                | probability of reusing existing class |
+| p_big_switch                 | probability of big switch |
+| p_packed_switch              | probability of packed switch |
+| p_switch_empty_case          | probability of having a case with empty body |
+| for_step                     | custom for loop step can be set (e.g., +1, -1, +2, -2, +4, -4, ...)
+| p_ind_var_type               | custom (other than integer) type can be used as loop induction variable type
 
-#### Var types description:
+### Var types description:
 
 | Ver type | Meaning |
 | -------- | ------- |
@@ -282,71 +193,26 @@ corresponding stat files are created - fails-sorted.txt, crashes-sorted.txt, etc
 | local_other | non-static field of an object of a foreign class, example: Object1.iFld |
 | block | the variable is declared in current block (loop) |
 
-Other new things:
+### Other configurable items:
 
-- types               - two new types: Object and Array. Object variables can 
-be objects of any generated class, all generated arrays are treated as Array 
-                      variables and can be assigned/reassigned. Also, 
-                      sub-arrays can be assigned/reassigned.
-- op_cats             - two new categories: object_assn, array_assn
-- statements          - one new statement kind - NewThreadStatement
+- types               - supported types: primitive types (boolean, byte, short, int, long, float, double), reference types. Reference types variables can
+be objects of any generated class. Besides, all generated arrays are treated as Array variables and can be assigned/reassigned.  
+- statements          - supported statements: ForLoopStmt, WhileDoStmt, EnhancedForStmt, ContinueStmt, BreakStmt, IfStmt, SwitchStmt, AssignmentStmt, IntDivStmt, ReturnStmt, TryStmt, ExcStmt (exception throw), VectStmt (assignment statement following a pattern that make vectorization optimization applicable), InvocationStmt (method invocation), CondInvocStmt,SmallMethStmt
+- operator            - operators list can also be customized
 
-## Running tests on device
+## Known issues
 
-Set ANDROID_SERIAL to a serial number of device you want to run tests on. 
-(Type 'adb devices' to see which devices are connected to the host)
-Set DEVICE_MODE variable in common.sh to 'on'. That's all - the rest 
-scripts should work exactly as in host mode, even in multi-threaded mode
-
-## Running tests in JIT_PROFILE mode on device
-
-In this mode Fuzzer does the next steps for each iteration:
-- generates -st \<number\> tests
-- builds apk from generated tests
-- installs apk
-- repeats -si \<number\> times:
-- runs the apk in interpreter mode, runs it as an application, compares output, 
-forces the system to recompile the app using collected profile.
-
-Steps to run the tests in JIT profile mode:
-1. Set up the environment:
-   export ANDROID_SDK_ROOT=<path to Android SDK>
-   export ANDROID_SERIAL=<serial number of the device to run the tests on>
-2. Use configJIT.yml settings by passing "-conf configJIT.yml" options to rt.sh script
-3. Add "-apk" argument to rt.sh script
-4. Other helpful rt.sh options are:
-  - -st <number> - Number of subtests for apk-mode
-  - -si <number> - Number of iterations for apk-mode
-  - -mt <number> - Min milliseconds to execute apk
-  - -o           - Pass -o option to Fuzzer and control the execution from outside
-
-Example: `nice bash ./mrt.sh -NT 10000 -APK -R res/JIT_profile_WW10 -A -apk -jit -o -st 10 -si 5 -mt 23000 -t 600 -sp -conf configJIT.yml`
-
-**Notes:**
-- **Due to running an app with GUI this mode works only in one thread, -NP option will not work**
-- **Execution time is quite long, to reduce it you can decrease -st and -mt parameters.**
-**Also you can set smaller max_small_meth_calls parameter in yml config file** 
-
-#### Explanation of arguments used here:
-
-| Arg   | Meaning |
-| ----- | ------- |
-| -R    | Save the results to the specified directory |
-| -NT   | Number of tests to generate by each thread |
-| -APK  | Enable apk mode for mrt.sh script(will automatically set the number of processes to 1) |
-| -A    | Pass the rest arguments to rt.sh script |
-| -apk  | Enable the apk mode for rt.sh script |
-| -jit  | Enable the jit mode |
-| -o    | Vary the test execution by the outer parameter |
-| -st   | Number of sub-tests included in each apk |
-| -si   | Number of sub-iteration performed for the each apk |
-| -mt   | Minimal time of apk execution in ms |
-| -t    | Timeout for the each test |
-| -sp   | Save passed tests |
-| -conf | Use another Fuzzer configuration file (configJIT.yml tunes Fuzzer to generate JIT-stressing tests) |
-
+March 01, 2018:
+- Sometimes two or more @Override methods with the same name and signature are generated in the same child class causing a syntax error
+- Sometimes static variable is generated and used but is not declared causing a syntax error
+- Possible inconsistence cycled call chains detection: rejecting call chains too strictly 
+- String type testing support is not enabled
 
 ## Authors
 - Mohammad R. Haghighat (Intel Corporation)
 - Dmitry Khukhro (Intel Corporation)
 - Andrey Yakovlev (Intel Corporation)
+
+### Authors of 2017-2018 modifications by Azul Systems
+- Nina Rinskaya (Azul Systems)
+- Ivan Popov (Azul Systems)

@@ -1,4 +1,5 @@
 # Copyright (C) 2016 Intel Corporation
+# Modifications copyright (C) 2017-2018 Azul Systems
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +19,13 @@
 #
 # Authors: Mohammad R. Haghighat, Dmitry Khukhro, Andrey Yakovlev
 #----------------------------------------------------------
+
+#----------------------------------------------------------
+# Java* Fuzzer test generator
+#
+# Modifications 2017-2018: Nina Rinskaya (Azul Systems)
+#----------------------------------------------------------
+
 OP_LIST = []
 
 def defOperators
@@ -152,7 +160,7 @@ class Expression
         @operands = []
         @operator = nil
         @className = className
-        @kind = $conf.exp_kind.getRand((depth > $conf.max_exp_depth) ?
+        @kind = $conf.exp_kind.getRand((depth > $conf.max_exp_depth or $globalContext.getCallersHashDepth() >=$conf.max_callers_chain ) ?
         ['literal', 'scalar', 'field'] : nil,excl()) unless kind
         if ['invoc', 'libinvoc'].member?(@kind)
             inv = (@kind == 'invoc' ? ExpInvocation : ExpLibInvoc).new(@parentStmt, @type, depth)
@@ -276,6 +284,10 @@ class Expression
                 @operands << Expression.new(@parentStmt, 'int', depth+1, nil, nil, Exp::CAST)
                 next
             end
+            if @operator.type == 'Object' and @operator.size != 0
+                @operands << Expression.indExp(@parentStmt, depth+1, @operator.size.to_s)
+                next
+            end
             if (indKind = $conf.ind_kinds.getRand()) == 'any' or iVarsList.empty?
                 @operands << Expression.indExp(@parentStmt, depth+1, MAX_TRIPNM)
                 next
@@ -305,7 +317,11 @@ class Expression
             return ret
         end
         if (indKind = $conf.ind_kinds.getRand()) == 'any' or iVarsList.empty?
-            ret=Expression.indExp(@parentStmt, depth+1, MAX_TRIPNM)
+            if @type == 'Object' # and @size != 0
+                ret = Expression.indExp(@parentStmt, depth+1, @size.to_s)
+            else
+                ret=Expression.indExp(@parentStmt, depth+1, MAX_TRIPNM)
+            end
             #dputs "Generated a single index "+(ret.instance_of?(String) ? "str! "+ret : ret.gen()+" type = "+ret.type+"; resType = "+ret.resType)
             return ret
         end
@@ -465,14 +481,22 @@ class Statement
             [cl]*(loopDepth > 0 ? ($conf.stmt_list[cl][1]/($conf.stmt_list[cl][2]**loopDepth)).to_i :
             $conf.stmt_list[cl][0])
         }.flatten
-        if $run_methods >= $conf.max_threads || !@context.getContMethod().mainFlag #@context.getContMethod().runFlag
+        if $run_methods >= $conf.max_threads || !(@context.getContMethod().mainTestFlag || @context.getContMethod().mainFlag) #@context.getContMethod().runFlag
             normStmtList.delete(NewThreadStmt)
         end
-        unless @context.getContMethod().mainFlag #@context.getContMethod().runFlag
+        unless (@context.getContMethod().mainTestFlag || @context.getContMethod().mainFlag) #@context.getContMethod().runFlag
             normStmtList.delete(SmallMethStmt)
         end
+        if $globalContext.getCallersHashDepth() >=$conf.max_callers_chain
+ normStmtList.delete(InvocationStmt)
+ normStmtList.delete(SmallMethStmt)
+ normStmtList.delete(CondInvocStmt)
+        end
+        ds = ""
+        ds += normStmtList.collect{ |s| s.name + ", " }.join()
         while true
-            stmt = wrand(normStmtList).new(@context, self)
+            stmtClass = wrand(normStmtList)
+            stmt = stmtClass.new(@context, self)
             break unless stmt.emptyFlag
         end
         stmt
@@ -490,9 +514,13 @@ class Statement
         n = 1 if n == 0 and !canBeEmpty
         res = []
         n.times {
-            res << pickNested()
+            s = pickNested()
+            res << s
             break if stmtsRemainder() <= 0
         }
+res1 = ""
+res1 += res.collect{|st| st.gen()}.join()
+#       dputs "genStmtSeq:  \n/*" + res1 + "*/\n"
         return res
     end
 
@@ -535,7 +563,7 @@ class IntDivStmt < Statement
 
     def initialize(cont, par)
         super(cont, par, true)
-        if (loopNesting() > 1)  # no try-catch in nested loops to work around Android's slowness at exception handling (ABIT-1214, ABIT-888)
+        if (loopNesting() > 3)  # no try-catch in nested loops to work around Android's slowness at exception handling (ABIT-1214, ABIT-888)
             @emptyFlag = true
             return
         end

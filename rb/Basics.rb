@@ -1,4 +1,5 @@
 # Copyright (C) 2016 Intel Corporation
+# Modifications copyright (C) 2017-2018 Azul Systems
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +18,12 @@
 #  Basic classes
 #
 # Authors: Mohammad R. Haghighat, Dmitry Khukhro, Andrey Yakovlev
+#----------------------------------------------------------
+
+#----------------------------------------------------------
+# Java* Fuzzer test generator
+#
+# Modifications 2017-2018: Nina Rinskaya (Azul Systems), Ivan Popov (Azul Systems)
 #----------------------------------------------------------
 
 module Nam # Name attributes
@@ -72,6 +79,7 @@ end
 # scalar local variable
 class Var
     attr_reader :type, :flags
+    attr_reader :init_value
     attr_accessor :prepostFlag, :inductionVarFlag, :currIndVarFlag, :className, :context, :classMember
 
     def initialize(cont, type="", flags=0, className=nil, name=nil)
@@ -93,6 +101,7 @@ class Var
         @prepostFlag = false
         @inductionVarFlag = false
         @currIndVarFlag = false
+        @init_value = 0
     end
 
     def flag?(fl)
@@ -128,9 +137,11 @@ class Var
 
     def gen_decl
         if flag?(Nam::NULL) or !$conf.outer_control or @type=='Object'
-            return @name + "=" + (flag?(Nam::NULL) ? (@type == 'Object' ? "null" : "0") : rLiteral(@type, @className, @contex, flag?(Nam::NOTNULL)))
+            @init_value = (flag?(Nam::NULL) ? (@type == 'Object' ? "null" : "0") : rLiteral(@type, @className, @context, flag?(Nam::NOTNULL)))
+            return @name + "=" + @init_value
         else
-            return @name + "=" + "FuzzerUtils.next"+@type.capitalize+"()"
+            @init_value = "FuzzerUtils.next"+@type.capitalize+"()"
+            return @name + "=" + @init_value
         end
     end
 
@@ -156,7 +167,7 @@ class Var
     end
 
     def gen_obj_checkSum
-        return CHECKC+"("+name+")" #if @className.constructor.nil?
+        return SUPER + "." + CHECKC + "("+name+")" #if @className.constructor.nil?
     end
 
     def gen
@@ -178,7 +189,11 @@ class Arr < Var
     def initialize(cont, ndim=0, type="", flags=0, name=nil, size=0)
         super(cont, type, flags, nil, name)
         size = rand($conf.max_big_array)+$conf.min_big_array if prob($conf.p_big_array) and ndim==0
+
         @size = size
+        if type == 'Object' and $conf.max_object_array_size != $conf.max_size
+            @size=rand($conf.max_object_array_size) + 1
+        end
         @ndim = ndim
         @ndim = wrand([1, 1, 1, rand($conf.max_arr_dim)+1]) if ndim == 0 and @size==0
         @ndim = 1 if @size!=0
@@ -200,11 +215,13 @@ class Arr < Var
     def gen_init
         return "" if flag?(Nam::NULL)
         if !$conf.outer_control or @type=='Object'
-            "init(" + name + ", " +
+            
+        SUPER + "." + INITC + "(" + name + ", " +
                 (["short", "char", "byte"].member?(@type) ? "("+@type+")" : "") +
                 rLiteral(@type, nil, @context, true) + ");"
         else
-            "init(" + name + ", " +
+            
+        SUPER + "." + INITC + "(" + name + ", " +
                 "FuzzerUtils.next"+@type.capitalize+"()" + ");"
         end
     end
@@ -213,9 +230,9 @@ class Arr < Var
         return "0" if flag?(Nam::NULL)
         case @type
             when "float", "double" then
-                "Double.doubleToLongBits(" + CHECKC + "(" + name + "))"
+                "Double.doubleToLongBits(" + SUPER + "." + CHECKC + "(" + name + "))"
             else
-                CHECKC + "(" + name + ")"
+                SUPER + "." + CHECKC + "(" + name + ")"
         end
     end
 end
@@ -285,16 +302,25 @@ class Context
     #------------------------------------------------------
     def addMethodCaller(caler, callee=nil, hash=nil)
         if callee.nil?
+            callee_nil = "true"
             callee=getContMethod()
+        else
+            callee_nil = "false"
         end
         if caler==callee
             printMethodCallers()
-            error("Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\"", true)
+#            error("Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\"", true)
+    puts "DEBUG: Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\", case 1, callee_nil = " + callee_nil
+#    return
+exit(1)
         end
         return if caler==callee or callee.nil? or caler.nil?
         if caller?(callee, caler)
             printMethodCallers()
-            error("Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\"", true)
+#            error("Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\"", true)
+            puts "DEBUG: Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\", case 2"
+#            return
+            exit(1)
         end
         hash=$globalContext.methodCallers if hash.nil?
         hash[callee]=[] if hash[callee].nil?
@@ -313,7 +339,7 @@ class Context
         else
             return 0 if hash[callee].size<=1
             arr=[]
-            hash[callee].each { |val| arr<<(val!=callee ? getCallersHashDepth(val, hash) : 0) }
+            hash[callee].each { |val| arr<<(val!=callee ? getCallersHashDepth(val, hash) : 0) } # added && !val.constructorFlag
             return arr.max+1
         end
     end
@@ -322,7 +348,25 @@ class Context
     def canAddCaller?(callee, caler)
         prevLength = getCallersHashDepth()
         hash=$globalContext.methodCallers.smart_copy()
-        addMethodCaller(caler, callee, hash)
+        #added this check (copypaste from addMethodCaller) to return false instead of fatal error in case we have a cyclic call chain
+        if callee.nil?
+            callee=getContMethod()
+       end
+       if caler==callee
+           printMethodCallers()
+           return false
+#            error("Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\"", true)
+      end
+       return false if caler==callee or callee.nil? or caler.nil?
+       if caller?(callee, caler)
+           printMethodCallers()
+           return false
+#            error("Fatal! trying to cycle a call chain: callee \""+callee.name+"\" is already a caller of caller \""+caler.name+"\"", true)
+      end
+#end of check (copypaste fron addMethodCaller) to return false instead of fatal error in case we have a cyclic call chain
+
+       addMethodCaller(caler, callee, hash)
+
         nextLength=prevLength = getCallersHashDepth(nil, hash)
         return (nextLength<=$conf.max_callers_chain or prevLength==nextLength)
     end
@@ -384,14 +428,11 @@ class Context
     end
 
     #------------------------------------------------------
-    def getVar(reuseProb, type, destFlag, className=nil, notnull=false, metlist=nil, not_block=false)
+def getVar(reuseProb, type, destFlag, className=nil, notnull=false, metlist=nil, not_block=false)
         var = nil
         met=getContMethod()
-        #localObjList((!met.nil? and met.static), className) if type=='Object' #and ((!met.nil? and !met.static) or !@kind==Con::CLASS)
-        #localVarList((!met.nil? and met.static), type) if type!='Object' #and ((!met.nil? and !met.static) or !@kind==Con::CLASS)
         metlist=[] if metlist.nil?
         metlist<<met if !met.nil?
-        #dputs "Searching a var "+(met.nil? ? "" : "; for a method "+met.name)+"; runFlag = "+(met.nil? ? "false" : met.runFlag.to_s)
         if prob(reuseProb) or (type=='Object' and $globalContext.classList.size()>=$conf.max_classes)
             if type != 'Object'
                 if !met.nil? and met.static
@@ -418,60 +459,101 @@ class Context
             var = wrand(vars)
         end
         if !var.nil?
-            metlist.each() { |met| addMethodCaller(met, var.className.constructor, nil) if (!var.nil? and !var.className.nil? and !var.className.constructor.nil? and !met.nil?) }
             return var
         end
-        excl_types=[]
+  excl_types=[]
         excl_types+=['block'] if not_block or @kind>=Con::METH
         excl_types+=['non_static'] if (!met.nil? and met.static) or (met.runFlag and not $conf.mode == 'MM_extreme')
         excl_types+=['block', 'local', 'local_other'] if @kind==Con::CLASS
         excl_types+=['local_other', 'static_other'] if $stop_creating_outer_fields or (met.runFlag and not $conf.mode == 'MM_extreme')
         excl_types+=['static'] if met.runFlag
+
         vtype=$conf.var_types.getRand(nil, excl_types)
         addcaller=true
         flags=(notnull ? Nam::NOTNULL : 0)
         case vtype
-            when 'non_static'
+            when 'non_static' # generating non-static field of a class
                 flags=flags|Nam::CLS|Nam::PUB
-                var = Var.new(met.methClass.context, type, flags, className) if (!met.nil? and !met.static)
-            when 'static'
+                # if creating field of type classname leads to cyclic inheritance then set var to nil and local var of type classname will be created instead (see below)
+                if type == 'Object' && !met.nil? && !JavaClass.noCyclicInheritanceCheck?(met.methClass, className)
+                    var = nil
+                else # no cyclic inheritance, can create field of type classname
+                    var = Var.new(met.methClass.context, type, flags, className) if (!met.nil? and !met.static)
+                    addMethodCaller(met.methClass.constructor, className.constructor) if className != nil;
+                    addcaller=false
+                end
+            when 'static' # generating static field of a class
                 flags=flags|Nam::PUB|Nam::STAT|Nam::CLS
-                var = Var.new((met.nil? ? self : met.methClass.context), type, flags, className) # self
-                addMethodCaller(met.methClass.constructor, var.className.constructor, nil) if (!met.nil? and !met.methClass.nil? and !met.methClass.constructor.nil? and !var.nil? and !var.className.nil? and !var.className.constructor.nil?)
-            when 'local'
+                # if creating field of type classname leads to cyclic inheritance then set var to nil and local var of type classname will be created instead (see below)
+                if type == 'Object' && !JavaClass.noCyclicInheritanceCheck?((met.nil? ? getContMethod().methClass : met.methClass), className)
+                    var = nil
+                else # no cyclic inheritance, can create field of type classname
+                    var = Var.new((met.nil? ? self : met.methClass.context), type, flags, className) # self
+                    metlist=[met.methClass.constructor]
+                    addMethodCaller(met.methClass.constructor, className.constructor) if className != nil;
+                    addcaller=false
+                end
+            when 'local' # generating local var
                 flags=flags|(@kind == Con::CLASS ? Nam::PUB|Nam::CLS : 0)
                 var = Var.new(self, type, flags, className)
+                addMethodCaller(met, className.constructor) if !className.nil?
+                addcaller=false
             when 'block'
                 flags=flags|Nam::BLOCK
-                var = Var.new(self, type, flags, className)
-            when 'local_other'
-                className=getClass($conf.p_class_reuse, self, metlist) if (className.nil? and type=='Object')
-                reverseMetlist=[]
-                reverseMetlist<<className.constructor if (!className.nil? and !className.constructor.nil?)
-                outerClass = getClass($conf.p_class_reuse, self, metlist, reverseMetlist)
-                outer=getVar(reuseProb, 'Object', true, outerClass, true, metlist, not_block)
-                metlist<<outer.className.constructor if !outer.className.constructor.nil?
-                flag=(outer.flag?(Nam::BLOCK) ? Nam::BLOCK : 0) | (notnull ? Nam::NOTNULL : 0)
-                flags=flags|Nam::PUB|Nam::CLS
-                inner=Var.new(outerClass.context, type, flags, className)
-                var=Var.new(self, type, Nam::SUB|flag, inner.className, outer.name+"."+inner.name)
+                var = Var.new(self, type, flags, className) 
+                addMethodCaller(met, className.constructor) if !className.nil?;
                 addcaller=false
-            when 'static_other'
+            when 'local_other' # generating non-static field in a class other than current
                 className=getClass($conf.p_class_reuse, self, metlist) if (className.nil? and type=='Object')
                 reverseMetlist=[]
                 reverseMetlist<<className.constructor if (!className.nil? and !className.constructor.nil?)
                 outerClass = getClass($conf.p_class_reuse, self, metlist, reverseMetlist)
-                metlist<<outerClass.constructor if !outerClass.constructor.nil? #new!
+                # if creating field of type classname leads to cyclic inheritance then set var to nil and local var of type classname will be created instead (see below)
+                if type == 'Object' && !JavaClass.noCyclicInheritanceCheck?(outerClass, className)
+                    var = nil
+                    inner = nil
+                elsif  type == 'Object' && className == nil # not sure if this branch is ever reached
+                    var = nil
+                    inner = nil
+                else # no cyclic inheritance, can create field of type classname
+                    outer=getVar(reuseProb, 'Object', true, outerClass, true, metlist, not_block)
+                    flag=(outer.flag?(Nam::BLOCK) ? Nam::BLOCK : 0) | (notnull ? Nam::NOTNULL : 0)
+                    flags=flags|Nam::PUB|Nam::CLS
+                    inner=Var.new(outerClass.context, type, flags, className)
+                    addMethodCaller(outerClass.constructor, inner.className.constructor) if outerClass != nil and className != nil
+                    var=Var.new(self, type, Nam::SUB|flag, inner.className, outer.name+"."+inner.name)
+                    addMethodCaller(met, outerClass.constructor) if outerClass != nil 
+                    addcaller=false
+
+                end
+            when 'static_other' # generating static field in a class other than current
+                className=getClass($conf.p_class_reuse, self, metlist) if (className.nil? and type=='Object')
+                reverseMetlist=[]
+                reverseMetlist<<className.constructor if (!className.nil? and !className.constructor.nil?)
+                outerClass = getClass($conf.p_class_reuse, self, metlist, reverseMetlist)
                 flags=flags|Nam::PUB|Nam::CLS|Nam::STAT
-                var=Var.new(outerClass.context, type, flags, className)
+                # if creating field of type classname leads to cyclic inheritance then set var to nil and local var of type classname will be created instead (see below)
+                if type == 'Object' && !JavaClass.noCyclicInheritanceCheck?(outerClass, className)
+                    var = nil
+                elsif type == 'Object' && className == nil # not sure if this branch is ever reached
+                    var = nil
+                else # no cyclic inheritance, can create field of type classname
+                    var=Var.new(outerClass.context, type, flags, className)
+                    addMethodCaller(outerClass.constructor, var.className.constructor) if outerClass != nil and className != nil 
+                    addcaller=false
+                end
             else
                 error("getVar: var_type = " + type, true)
         end
-        if var.nil?
+        if var.nil? # then creating local var, e.g., if we couldn't create class fields due to cyclic inheritance
             flags = (@kind == Con::CLASS ? Nam::PUB|Nam::STAT|Nam::CLS : 0)|(notnull ? Nam::NOTNULL : 0)
             var = Var.new(self, type, flags, className) if var.nil?
+            addMethodCaller(met, className.constructor) if className != nil ;
+            addcaller=false
         end
-        metlist.each() { |met| addMethodCaller(met, var.className.constructor, nil) if !var.className.nil? and !var.className.constructor.nil? and !met.nil? and addcaller }
+        if type == 'Object'
+        metlist.each() { |met| addMethodCaller(met, var.className.constructor, nil) if !var.className.nil? and !var.className.constructor.nil? and !met.nil? and addcaller}
+        end
         return var
     end
 
@@ -485,16 +567,18 @@ class Context
     def getClass(reuseProb, context, metlist=[], reverseMetlist=[])
         if prob(reuseProb) or $globalContext.classList.size()>=$conf.max_classes
             if context.nil? or context.getContMethod().nil?
+                klassList=classListForSelection(metlist).find_all { |c| c.extendsClass == nil }
+                if klassList.size() > 0
+                    return wrand(klassList)
+                end
                 return wrand(classListForSelection(metlist))
             end
             callee=context.getContMethod()
-            tmparr=classListForSelection(metlist, reverseMetlist).select { |a| a.name!=callee.name and (a.constructor.nil? or (!caller?(a.constructor, callee) and canAddCaller?(a.constructor, callee))) }
+            tmparr=classListForSelection(metlist, reverseMetlist).select { |a| a.name!=callee.name and (a.constructor.nil? or (!caller?(a.constructor, callee) and $globalContext.canAddCaller?(a.constructor, callee))) and !callee.methClass.childClassList.include?(a)}
             if tmparr.size > 0
                 cls=wrand(tmparr)
                 metlist=[] if metlist.nil?
                 metlist<<callee if !callee.nil?
-                metlist.each() { |callee| addMethodCaller(callee, cls.constructor, nil) if !cls.constructor.nil? }
-                reverseMetlist.each() { |callee| addMethodCaller(cls.constructor, callee, nil) if !cls.constructor.nil? }
                 return cls
             end
         end
@@ -505,8 +589,6 @@ class Context
             metlist<<callee if !callee.nil?
             cls=JavaClass.new(false, metlist, reverseMetlist)
             if callee.nil? or cls.constructor.nil? or !caller?(cls.constructor, callee)
-                metlist.each() { |callee| addMethodCaller(callee, cls.constructor, nil) if !callee.nil? and !cls.constructor.nil? }
-                reverseMetlist.each() { |callee| addMethodCaller(cls.constructor, callee, nil) if !callee.nil? and !cls.constructor.nil? }
                 return cls
             end
         end
@@ -525,7 +607,10 @@ class Context
             ndim=0 if ndim==1 # Trying to select a random-dim array for 1-dim array assignment
             size=arrch.size
         else
-            if prob($conf.p_big_array) and ndim==0
+          if type == 'Object' 
+               size=rand($conf.max_object_array_size) + 1
+          end
+           if prob($conf.p_big_array) and ndim==0 and  type != 'Object'
                 size = rand($conf.max_big_array)+$conf.min_big_array
             else
                 size=0
@@ -575,11 +660,11 @@ class Context
                 flag|=(outer.flag?(Nam::BLOCK) ? Nam::BLOCK : 0)
                 inner=Arr.new(outerClass.context, ndim, type, Nam::PUB|Nam::CLS|flag, nil, size)
                 ndim=inner.ndim
-                arr=Arr.new(self, ndim, type, Nam::SUB|flag, outer.name+"."+inner.name)
+                arr=Arr.new(self, ndim, type, Nam::SUB|flag, outer.name+"."+inner.name, size)
             else
                 error("Unknown var_type "+vtype)
         end
-        arr=Arr.new(self, ndim, type, flag) if arr.nil?
+        arr=Arr.new(self, ndim, type, flag, nil, size) if arr.nil?
         return arr
     end
 
@@ -725,16 +810,20 @@ class JavaClass
     attr_reader :headFlag
     attr_reader :isRunnable
     attr_reader :methMain
+    attr_reader :methMainTest
     attr_reader :name
     attr_reader :constructor
     attr_reader :classMembers
     attr_reader :num_methods
+    attr_reader :extendsClass
+    attr_reader :childClassList
 
     def initialize(headClass, outer_callers=[], inner_callees=[])
         @num_methods = 0
         @isRunnable = false
         @headFlag = headClass
         @context = Context.new($globalContext, Con::CLASS, nil, self)
+   
         if @headFlag
             @name = $conf.mainClassName
             $globalContext.class_=self
@@ -744,19 +833,44 @@ class JavaClass
         $globalContext.registerClass(self)
         @methList = []
         @classMembers = [] # additional/auxiliary members added while generating stmts
+        @childClassList = []
+        @extendsClass=nil
+        if $globalContext.classList.size  > 0  and prob($conf.p_extends_class)
+            tempCls = wrand($globalContext.classList)
+            @extendsClass = tempCls
+            #prevent cycled inheritance
+            while tempCls.extendsClass != nil
+               if tempCls.extendsClass.name == @name
+                    @extendsClass=nil
+                    break
+                end
+               tempCls = tempCls.extendsClass 
+            end
+        end
+        tempCls=@extendsClass
+        while tempCls != nil
+            tempCls.childClassList << self
+            tempCls=tempCls.extendsClass
+        end
         Var.new(@context, "long", Nam::CLS|Nam::PUB|Nam::STAT, nil, "instanceCount")
         @auxMemFlags = Hash.new(false)
         if @headFlag
-            @constructor=JavaMethod.new(self, '', false, false, true, outer_callers, inner_callees, true) #if !@headFlag
-            @methMain = JavaMethod.new(self, "void", true, true, false, [@constructor])
+            @constructor=JavaMethod.new(self, '', false, false, false, true, outer_callers, inner_callees, true) #if !@headFlag
+            @methMain = JavaMethod.new(self, "void", true, false, true, false, [@constructor])
+            @methMainTest = JavaMethod.new(self, "void", false, true, true, false)
         end
         @constructor=nil
         if !@headFlag and prob($conf.p_constructor) and $globalContext.getCallersHashDepth() < $conf.max_callers_chain
-            @constructor=JavaMethod.new(self, '', false, false, true, outer_callers, inner_callees)
+            @constructor=JavaMethod.new(self, '', false, false, false, true, outer_callers, inner_callees)
             @methList << @constructor
         else
-            @constructor=JavaMethod.new(self, '', false, false, true, outer_callers, inner_callees, true) if !@headFlag
+            @constructor=JavaMethod.new(self, '', false, false, false, true, outer_callers, inner_callees, true) if !@headFlag
         end
+
+        if not @extendsClass.nil? and not @constructor.nil? and not @extendsClass.constructor.nil?
+           @context.addMethodCaller( @constructor, @extendsClass.constructor, nil) 
+        end
+
     end
 
     def runnable?()
@@ -770,6 +884,107 @@ class JavaClass
     def setConstructor(method)
         @constructor=method
     end
+
+    def isExtendedBy?(cls)
+        if cls == nil 
+            return false
+        end
+        tempCls = cls
+        while tempCls.extendsClass != nil
+            if tempCls.extendsClass == self
+                return true
+            else
+                tempCls = tempCls.extendsClass
+            end
+        end
+        return false
+    end
+
+# can we create field of type cls2 in class cls1?
+# returns true if there are no cyclic inheritance issues
+    def JavaClass.noCyclicInheritanceCheck?(cls1, cls2)
+        if cls2.nil? 
+            return false # not sure what it means, but it's better to not create field if in doubt
+        end
+
+        if (cls1 == cls2)
+            return false
+        end
+
+# parent type shouldn't have fields of children types
+        if cls1.isExtendedBy?(cls2)
+            return false
+        end
+
+# if cls2 has field of type cls1 or if cls2 parents have fields of type cls1 or cls1's children then we will end up with cycled inheritance issue
+        tmp = cls2
+        while !tmp.nil?
+            if tmp == cls1
+                #detected cyclic inheritance when trying to create field of type cls2 in class cls1
+                return false
+            else
+                tmp.context.objList.each do |cls, objs|
+                    objs.each do |obj|
+                        if obj.className == cls1 || cls1.isExtendedBy?(obj.className) || !JavaClass.noCyclicInheritanceCheck?(cls1, obj.className) # recursive call!!!!
+                            #detected cyclic inheritance when trying to create field of type cls2 in class cls1
+                            return false
+                        end
+                    end
+                end
+            end
+            tmp = tmp.extendsClass
+        end
+        return true
+    end
+
+
+# can we create field of type cls2 in class cls1?
+# returns true if there are no cyclic inheritance issues
+    def JavaClass.noCyclicInheritanceCheck_?(cls1, cls2)
+        if cls2.nil? 
+            return false # not sure what it means, but it's better to not create field if in doubt
+        end
+
+        if (cls1 == cls2)
+            return false
+        end
+
+# parent type shouldn't have fields of children types
+        if cls1.isExtendedBy?(cls2)
+            return false
+        end
+
+# if cls2 has field of type cls1 or if cls2 parents have fields of type cls1 or cls1's children then we will end up with cycled inheritance issue
+        tmp = cls2
+        while !tmp.nil?
+            if tmp == cls1
+                #detected cyclic inheritance when trying to create field of type cls2 in class cls1
+                return false
+            else
+                tmp.context.objList.each do |cls, objs|
+                    objs.each do |obj|
+                        if obj.className == cls1 || cls1.isExtendedBy?(obj.className)#|| !JavaClass.noCyclicInheritanceCheck?(cls1, obj.className) # recursive call!!!!
+                            #detected cyclic inheritance when trying to create field of type cls2 in class cls1
+                            return false
+                        end
+                        cls1.childClassList.each do |cls1_child|
+                            if obj.className == cls1_child
+                            #detected cyclic inheritance when trying to create field of type cls2 in class cls1
+                                return false
+                            end
+                        end
+
+                    end
+                end
+            end
+            tmp = tmp.extendsClass
+        end
+        return true
+    end
+
+
+
+
 
     #------------------------------------------------------
     # add generated auxiliary class members to this class
@@ -786,7 +1001,7 @@ class JavaClass
         else
             @isRunnable=true
             @num_methods += 1
-            met=JavaMethod.new(self, 'void', false, false, false, [forMeth, @constructor], [], false, true)
+            met=JavaMethod.new(self, 'void', false, false, false, false, [forMeth, @constructor], [], false, true)
             @methList<<met
         end
         return met
@@ -798,7 +1013,7 @@ class JavaClass
         met=wrand(@methList.select() { |m| m.small }) if prob($conf.p_meth_reuse)
         if met.nil?
             @num_methods += 1
-            met=JavaMethod.new(self, 'void', false, true, false, [forMeth, @constructor], [], false, false, true)
+            met=JavaMethod.new(self, 'void', false, false, true, false, [forMeth, @constructor], [], false, false, true)
             @methList<<met
         end
         return met
@@ -808,27 +1023,28 @@ class JavaClass
     # returns a method instance for invocation: either new or from the list or nil
     # type=nil means any type but void
     def getMethod(forMeth, type=nil)
-        if $globalContext.getCallersHashDepth() >=$conf.max_callers_chain || ($conf.mode == 'default' && !forMeth.mainFlag)
+        if $globalContext.getCallersHashDepth(forMeth) >=$conf.max_callers_chain || ($conf.mode == 'olddefault' && !forMeth.mainFlag) || ($conf.mode == 'olddefault' && !forMeth.mainTestFlag)
             return nil
         end
         if (!prob($conf.p_meth_reuse) and @methList.size < $conf.max_meths and @num_methods < $conf.max_meths)
             @num_methods += 1
-            @methList << JavaMethod.new(self, type, false, !prob($conf.p_non_static_method)||forMeth.static, false, [forMeth])
+            @methList << JavaMethod.new(self, type, false, false, !prob($conf.p_non_static_method)||forMeth.static, false, [forMeth])
             return @methList[-1]
         end
         matching=[]
         $globalContext.classList.each() do |cls|
             matching+=cls.methList.find_all { |meth|
                 (meth.type == type or (meth.type != "void" and !type)) and
-                    !forMeth.caller?(meth) and $globalContext.canAddCaller?(meth, forMeth) and
+                    !forMeth.caller?(meth) and #$globalContext.canAddCaller?(meth, forMeth) and
                     (meth.static or !$globalContext.caller?(meth.methClass.constructor, forMeth)) and
-                    !meth.constructorFlag
+                    !meth.constructorFlag and
+                    (meth.static or (meth.static == forMeth.static)) # added in attempts to resolve issue with instant methods being called from static context
             }
         end
         return wrand(matching) if matching.size > 0
         return nil if @methList.size >= $conf.max_meths || @num_methods >= $conf.max_meths
         @num_methods += 1
-        @methList << JavaMethod.new(self, type, false, !prob($conf.p_non_static_method)||forMeth.static, false, [forMeth])
+        @methList << JavaMethod.new(self, type, false,  false, !prob($conf.p_non_static_method)||forMeth.static, false, [forMeth])
         return @methList[-1]
     end
 
@@ -837,7 +1053,7 @@ class JavaClass
     def genGlobCheckSums
         res = ""
         @methList.each do |meth|
-            next if meth.mainFlag
+            next if meth.mainTestFlag
             res += ln('FuzzerUtils.out.println("' + meth.resFieldName + ': " + ' + meth.resFieldName + ');')
         end
         res += ln('FuzzerUtils.out.println("' + STAT_INT_FLD_NAME + ': " + ' +
@@ -848,7 +1064,8 @@ class JavaClass
     #------------------------------------------------------
     # generate all the declarations of the class
     def gen
-        res = ln((@headFlag ? "public " : "")+"class " + @name + " extends " + SUPER + (runnable? ? " implements Runnable " : "") + " {") + "\n"
+        res = ""
+        res += ln((@headFlag ? "public " : "")+"class " + @name + (@extendsClass != nil ? " extends " + @extendsClass.name : "") + (runnable? ? " implements Runnable " : "") + " {") + "\n"
         shift(1)
         res += ln("public static final int " + MAX_TRIPNM + " = " + $conf.max_size.to_s + ";") + "\n"
         res += @context.genDeclarations()
@@ -857,6 +1074,7 @@ class JavaClass
         while (meth = @methList.detect { |m| !m.genFlag and !m.fictive })
             res += meth.gen() + "\n"
         end
+        res += @methMainTest.gen() if @headFlag
         res += @methMain.gen() if @headFlag
         shift(-1)
         res + ln("}")
@@ -896,7 +1114,7 @@ end
 # determines if the given class complies with criteria for being generated
 def strongEnough?(classDef)
     stmtCount = loopCount = 0
-    (classDef.methList + (classDef.headFlag ? [classDef.methMain] : [])).each do |meth|
+    (classDef.methList + (classDef.headFlag ? [classDef.methMain] : [])+ (classDef.headFlag ? [classDef.methMainTest] : [])).each do |meth|
         stat = countNestedStmts(meth.rootStmt)
         stmtCount += stat[0]
         loopCount += stat[1]
@@ -1006,18 +1224,62 @@ end
 
 def rLiteralObject(className=nil, context=nil, not_null=false)
     return "null" if !not_null and prob($conf.p_null_literal)
-    return "new " + $globalContext.getClass($conf.p_class_reuse, context).name+"()" if className.nil?
-    if !context.nil?
-        caler=context.getContMethod()
-        context.addMethodCaller(caler, className.constructor, nil) if !className.constructor.nil?
+     klass = nil
+     if !context.nil?
+        if !context.class_.nil?
+            klass = context.class_
+        else
+            if !context.method.nil? 
+                klass = context.method.methClass
+            end
+        end
     end
-    return "new " + className.name + "()"
+
+    if className.nil?
+        if context.nil?
+            if ($globalContext.classList.size()>0)
+                clsList=$globalContext.classList.find_all { |cls| cls.extendsClass.nil? }
+            end
+            if clsList.size() > 0
+                class1=wrand(clsList)
+                class2=class1
+            else
+                return "null"
+            end
+        else
+            clsList=$globalContext.classList.find_all { |cls| (klass != nil and cls != klass and !klass.childClassList.include?(cls) and JavaClass.noCyclicInheritanceCheck_?(klass, cls)) or  (((context == nil) or (klass == nil)) and cls.extendsClass.nil? )}
+            class2=wrand(clsList)
+            class1=class2.nil? ? $globalContext.getClass($conf.p_class_reuse, context) : class2
+        end
+
+    else
+        class1 = className
+        clsList = class1.childClassList.find_all { |cls| (klass != nil and cls != klass and !klass.childClassList.include?(cls) and JavaClass.noCyclicInheritanceCheck_?(klass, cls)) or (((context == nil) or (klass == nil)) and cls.extendsClass.nil? )}
+
+        class2=wrand(clsList)
+        class1=class2.nil? ? class1 : wrand([class1, class2])
+        # if we know that this is a local var in non-constructor method, then it's ok?:
+        if (klass != nil) and (class1 == klass or klass.childClassList.include?(class1)) and !(!context.nil? and !context.method.nil? and !context.method.constructorFlag)
+            return "null"
+        end
+    end
+    
+    if !context.nil? 
+        if  !context.method.nil?
+            caler=context.method
+        elsif !context.class_.nil?
+            caler=context.class_.constructor
+        end
+
+        context.addMethodCaller(caler, class1.constructor, nil) if !caler.nil? and !class1.constructor.nil?
+   end
+    return "new " + class1.name  + "()"
 end
 
 def rLiteralArray(className, context=nil, not_null=false)
     #return "null" if !not_null and prob($conf.p_null_literal)
     size=(className.size==0 ? MAX_TRIPNM : className.size)
-    return className.type.to_s+className.dim.to_s+"array("+size.to_s+", ("+className.type+")"+rLiteral(className.type, nil, context, true)+")"
+    return "FuzzerUtils."+className.type.to_s+className.dim.to_s+"array("+size.to_s+", ("+className.type+")"+rLiteral(className.type, nil, context, true)+")"
 end
 
 def rLiteral(type, className=nil, context=nil, not_null=false)
@@ -1043,7 +1305,7 @@ def rLiteral(type, className=nil, context=nil, not_null=false)
         when "boolean"
             return wrand(['true', 'false']) # should not be multiplied by -1
         when "String"
-            return wrand(['one', 'two', 'three', 'four']) # should not be multiplied by -1
+            return wrand(['"one"', '"two"', '"three"', '"four"']) # should not be multiplied by -1
         when 'Object'
             return rLiteralObject(className, context, not_null)
         when 'Array'
@@ -1089,6 +1351,6 @@ def dputs(message="", printPlace=true, stackDepth=1)
         [2..stackDepth+1].each do |elem|
             str=str+":"+caller[elem].to_s().gsub(/,/, "\n//")
         end
-        puts "//DEBUG "+(printPlace ? "(Called in "+str+")" : "")+" "+message
+        puts "//DEBUG " + (printPlace ? "(Called in "+str+")" : "")+" "+message
     end
 end

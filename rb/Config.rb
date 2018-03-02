@@ -1,4 +1,5 @@
 # Copyright (C) 2016 Intel Corporation
+# Modifications copyright (C) 2017-2018 Azul Systems
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,11 +18,18 @@
 #
 # Authors: Mohammad R. Haghighat, Dmitry Khukhro, Andrey Yakovlev
 #----------------------------------------------------------
+
+#----------------------------------------------------------
+# Java* Fuzzer test generator
+#
+# Modifications 2017-2018: Nina Rinskaya (Azul Systems), Ivan Popov (Azul Systems)
+#----------------------------------------------------------
+
 require 'getoptlong'
 require 'yaml'
 
 # GLOBAL CONSTANTS
-TOOL_VERSION = "4.2.001"
+TOOL_VERSION = "1.0.001"
 TABN = 4
 SUPER       = 'FuzzerUtils'
 MAX_TRIPNM  = 'N'
@@ -112,18 +120,36 @@ class Conf
     :p_null_literal, :max_callers_chain, :max_classes, :p_non_static_method, :p_big_array, :max_big_array, :min_big_array, :mainClassName, :package
     attr_accessor :outer_control, :outer_control_prob
     attr_accessor :min_small_meth_calls, :max_small_meth_calls
+    attr_accessor :mainTest_calls_num
+    attr_accessor :time_sleep_complete_tier1
+    attr_accessor :mainTest_calls_num_tier2
+    attr_accessor :max_nested_size
+    attr_accessor :min_size_fraction # minimal fraction of max_size to be guaranteed (other fraction is random(max_size-min_size_fraction*max_size) )
+    attr_accessor :max_nested_size_not_mainTest # max total number of iterations of nested loops in methods called from mainTest
+    attr_accessor :exp_invoc_loop_depth # max loop depth for which method invocation in expression can be generated
+    attr_accessor :p_extends_class # probability of class extension
+    attr_accessor :p_unknown_loop_limit  # probability that for loop has an unknown upper limit (random expression as a loop limit) -> can result in infinite loop
+    attr_accessor :p_inequality_in_loop_condition # probability that for loop have != in loop condition
+    attr_accessor :p_loop_iter_num_gt_max_size # probability that for loop iterations number will be greater than max arrays size
+    attr_accessor :p_switch_empty_case # probability of having a case with empty body
+    attr_accessor :p_guaranteed_AIIOB_in_infinite_loop_with_inequality # sometimes we want to intentionally start with upper bound and end up with lower bound: in case of < or > we would have unreached loop, in case of != we will have infinite loop, that's why we will always throw AIOOBException here
+    attr_accessor :p_method_override # probability that method in child class will override parent's class with matching signature
+    attr_accessor :max_object_array_size # Max object array size
+    attr_accessor :allow_object_args # 1: allow objects to be passed as methods arguments, 0: disallow objects to be passed as methods arguments
 
                   #------------------------------------------------------
     # default values of the generator parameters
     def initialize(parse_args=false)
         # general:
-        #@mode        = 'default' # the mode of the generator: either 'defaut' or 'MM' (memory management)
-        @mode        = 'jit' # the mode of the generator: either 'defaut' or 'MM' (memory management) or 'MM_extreme'
+        @mode        = 'default' # the mode of the generator: either 'defaut' or 'MM_extreme' (memory management)
         @mainClassName = 'Test' # Name of a main class
         @package = '' # Add java package name
         @outer_control = true # Ability to setup a random seed for Java code
         @outer_control_prob = 3 # 1 - 100% invocations, 2 - 50% invocations, 3 - 33% invocations, etc.
         @max_size    = 100  # max length of arrays and loops; should not be less than 10
+        @max_nested_size = 10000000 # max total number of iterations of nested loops
+        @max_nested_size_not_mainTest = 20000 # max total number of iterations of nested loops in methods called from mainTest
+        @min_size_fraction = 0.5 # minimal fraction of max_size to be guaranteed (other fraction is random(max_size-min_size_fraction*max_size) )
         @max_stmts   = 15   # generated statements max count
         #@max_nlen    = 3   # max length of a random name
         @max_arr_dim = 2    # array max dimension
@@ -140,6 +166,12 @@ class Conf
         @p_constructor = 0    # probability of non-trivial constructor
         @max_callers_chain = 2 # Maximum chain of methods calling each other (including constructors)
         @p_non_static_method = 50 # probability of non-static method
+        @mainTest_calls_num = 20 # number of mainTest method calls, should be adjusted with CompileThreshold
+        @time_sleep_complete_tier1 = 5000 # time in milliseconds to sleep after mainTest_calls_num invocations of mainTest to make sure Tier1 compilation is done; 0 if no sleep needed
+        @mainTest_calls_num_tier2 = 50 # number of mainTest method calls after sleep, should be adjusted with CompileThreshold (Tier2); 0 if no need to call mainTest again
+        @exp_invoc_loop_depth = 10 # max loop depth for which method invocation in expression can be generated
+        @p_extends_class =50 # probability of class extension
+        @p_method_override = 80 # probability that method in child class will override parent's class with matching signature
         # expressions:
         # MAX_NUM = 100
         # MAX_NUM = 0x80000000 # max int + 1
@@ -155,6 +187,12 @@ class Conf
         @start_frac     = 16    # fraction of the max value of induction var for initial value
         @min_small_meth_calls = 100 # minimal number of small method calls
         @max_small_meth_calls = 10000 # maximal number of small method calls
+        @p_unknown_loop_limit = 0  # probability that for loop has an unknown upper limit (random expression as a loop limit) -> can result in infinite loop
+        @p_inequality_in_loop_condition = 0 # probability that for loop will have != in loop condition
+        @p_loop_iter_num_gt_max_size = 0 # probability that for loop iterations number will be greater than max arrays size
+        @p_guaranteed_AIIOB_in_infinite_loop_with_inequality = 20 # sometimes we want to intentionally start with upper bound and end up with lower bound: in case of < or > we woul    d have unreached loop, in case of != we will have infinite loop, that's why we will always throw AIOOBException here
+        @max_object_array_size = @max_size
+        @allow_object_args = 0 # 1: allow objects to be passed as methods arguments, 0: disallow objects to be passed as methods arguments
 
         # expression probabilities:
         @p_invoc_expr     = 25   # probability of method invocation in expression
@@ -201,6 +239,7 @@ class Conf
         @p_class_reuse = 70   # probability of reusing existing class
         @p_big_switch = 1     # probability of big switch
         @p_packed_switch = 60 # probability of packed switch
+        @p_switch_empty_case = 5 # probability of having a case with empty body
         @for_step = ProbTab.new({-3=>1, -2=>1, -1=>4, 1=>32, 2=>1, 3=>1})
         @p_ind_var_type = ProbTab.new({'int'=>20, 'long'=>5, 'float'=>1, 'double'=>1}) # induction var types
         @stmt_list = {
@@ -225,22 +264,11 @@ class Conf
         }
         parseArgs() if parse_args
         if @mode == 'default'
-            @types.setValue('Array', 0)
-            @types.setValue('Object', 0)
+#           @types.setValue('Array', 0)
+#           @types.setValue('Object', 0)
             @p_big_array = 0
-            @p_constructor = 0
+#            @p_constructor = 0
             @max_threads = 0
-        elsif @mode == 'jit'
-            @types.setValue('Array', 0)
-            @types.setValue('Object', 0)
-            @p_big_array = 0
-            @p_constructor = 0
-            @max_threads = 0
-            @stmt_list[InvocationStmt] = [10,20,1]
-            @stmt_list[CondInvocStmt] = [30,20,1]
-            @exp_kind.setValue('invoc',100)
-            @exp_kind.setValue('libinvoc',50)
-            @max_meths = 10
         end
         $EXC_LIST.map!{|x| x==$USER_DEF_EXC ? $USER_DEF_EXC+@mainClassName : x}
         $USER_DEF_EXC=$USER_DEF_EXC+@mainClassName

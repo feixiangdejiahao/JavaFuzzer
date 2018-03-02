@@ -1,4 +1,5 @@
 # Copyright (C) 2016 Intel Corporation
+# Modifications copyright (C) 2017-2018 Azul Systems
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +19,14 @@
 #
 # Authors: Mohammad R. Haghighat, Dmitry Khukhro, Andrey Yakovlev
 #==========================================================
+
+#----------------------------------------------------------
+# Java* Fuzzer test generator
+#
+# Modifications 2017-2018: Nina Rinskaya (Azul Systems)
+#----------------------------------------------------------
+
+#----------------------------------------------------------------------------
 # ArrayIndexOutOfBoundsException - read/write from/to array
 # NegativeArraySizeException - Negative array size when creating
 # NullPointerException - synchronized(object=null), get/write field, invoke method of object=null,
@@ -36,7 +45,7 @@ class TryStmt < Statement
     def initialize(cont, par)
         super(cont, par, true, false)
         if (stmtsRemainder() < 4 or
-               loopNesting() > 1)  # no try-catch in nested loops to work around Android's slowness at exception handling (ABIT-1214, ABIT-888)
+               loopNesting() > 3)  # limiting depth of nested loops with try-catch
             @emptyFlag = true
             return
         end

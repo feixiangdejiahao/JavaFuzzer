@@ -1,4 +1,5 @@
 # Copyright (C) 2016 Intel Corporation
+# Modifications copyright (C) 2017-2018 Azul Systems
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +19,14 @@
 #
 # Authors: Mohammad R. Haghighat, Dmitry Khukhro, Andrey Yakovlev
 #==========================================================
+
+#----------------------------------------------------------
+# Java* Fuzzer test generator
+#
+# Modifications 2017-2018: Nina Rinskaya (Azul Systems)
+#----------------------------------------------------------
+#
+
 # IF statement
 class IfStmt < Statement
 
@@ -80,7 +89,7 @@ class SwitchStmt < Statement
         packed = prob($conf.p_packed_switch)
         step = packed ? 1 : 5
         minValue = mrand(128)
-        @caseCount = caseBig ? 70 : wrand([1,1,2,2,2,3,4])
+        @caseCount = caseBig ? 70 : wrand([1,1,2,2,2,3,4,5,6,7,8,9,10])
         totalAlts = @caseCount + (@needDefault ? 1 : 0)
         @caseValues = []
         if packed
@@ -113,8 +122,8 @@ class SwitchStmt < Statement
         @valueExpr = value
         numBreaks = 0
         @caseCount.times {|i|
-            @nestedStmts[i.to_s] = genStmtSeq($conf.max_if_stmts)
-            if prob(75)
+            @nestedStmts[i.to_s] = (prob($conf.p_switch_empty_case) ? [] : genStmtSeq($conf.max_if_stmts))
+            if (prob(75) and @nestedStmts[i.to_s].size > 0)
                 @nestedStmts[i.to_s] << BreakStmt.new(cont, self, false)
                 numBreaks += 1
             end
@@ -130,6 +139,7 @@ class SwitchStmt < Statement
             shift(1)
             res += @nestedStmts[i.to_s].collect{|st| st.gen()}.join()
             shift(-1)
+
         }
         if @needDefault
             res += ln("default:")

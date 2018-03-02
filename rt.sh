@@ -3,6 +3,7 @@
 #--------------------------------------------------------------------------
 #
 # Copyright (C) 2016 Intel Corporation
+# Modifications copyright (C) 2017-2018 Azul Systems
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,53 +19,45 @@
 #
 #--------------------------------------------------------------------------
 
+#----------------------------------------------------------
+# Java* Fuzzer test generator
+#
+# Modifications 2017-2018: Nina Rinskaya (Azul Systems), Ivan Popov (Azul Systems)
+#----------------------------------------------------------
+
 #--------------------------------------------------------------------------------
-# Run the icFuzz tool to generate a series of tests; compile each of them with javac,
-# make dex file, run the test by java and Dalvik in host mode and compare results.
+# Run the Fuzzer tool to generate a series of tests; compile each of them with javac,
+# run the test by reference java and java under test and compare results.
 # Parameter:
-#    -b,-bw,-bb <value> - use given build defined by branch, ww, or/and bits.
-#    -u <dir name>   - update Ruby files with those from $FILER_DIR/<dir name>
 #    -r <path>       - directory to put results into
 #    -p <prefix>     - prefix to add to the test dir names
 #    -kd - keep old dirs with failures alive if they exist - don't require removing them
-#    -co <opt> - compiler additional options
-#    -oc - run optimizing compiler
-#    -dp <pass> - disable optimization pass
-#    -i  - compare test results with interpreter mode instead of Java
-#    -no - run the tests without optimizations
-#    -t <integer> - timeout in seconds
-#    -tn <name>   - name of the test file and main class (Test by default)
-#    -v <path>    - verify build with existing tests rather than generate new ones
+#    -v <path>    - verify build with existing tests rather than generate new ones,
+#                   if file "config.sh" found in this directory, it is sourcsd to redefine variables,
+#                   such as source_subdir, timeout, limit_core_size
 #    -f <path>    - save summary of the run to the given file in the directory with results
-#    -tl <integer>- time limit of the run in minutes
 #    -sp - save the tests that passed (they are removed by default)
 #    -arg <arg>   - pass an arbitrary argument to VM
-#    -gc          - vary GC options during testing
-#    -extreme     - Additional option to use with CG mode. Disables output comparison
 #    -conf <file> - Pass config file to Fuzzer
-#    -apk         - Enable apk mode
-#    -st <number> - Number of subtests for apk-mode
-#    -si <number> - Number of iterations for apk-mode
-#    -mt <number> - Min milliseconds to execute apk
 #    -o           - Pass -o option to Fuzzer and control the execution from outside
 #    <integer>    - number of tests to generate
 #--------------------------------------------------------------------------------
 
-source common.sh
+CURR_DIR=$(pwd) # current dir
+RUN_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )" # Fuzzer scripts dir
 
-ORIG_RUBY_CODE_DIR="$FILER_DIR/rb"
+source ${RUN_DIR}/common.sh
+
 RUBY_CODE_DIR="$RUN_DIR/rb"
 
-FILES_OF_INTEREST="*.java *.class rt_cmd rt_apk rt_out* rt_err* core* tmp classes.dex src"
+run_sh_file=run.sh
+FILES_OF_INTEREST="*.java *.class rt_cmd rt_out* rt_err* core* tmp src ${run_sh_file} hs_err*"
 FILES_OF_INTEREST_PASSED="$FILES_OF_INTEREST"
 
-GC_TYPES=("GSS" "CMS" "SS")
-GC_HSPACE=("-XX:EnableHSpaceCompactForOOM" "-XX:DisableHSpaceCompactForOOM")
-GC_VERIFICATION="-Xgc:preverify -Xgc:postverify -Xgc:preverify_rosalloc -Xgc:postverify_rosalloc -Xgc:presweepingverify -Xgc:verifycardtable"
-GC_EXP=off
-EXTREME=off
+#IGNORE_DEBUG_OUTPUT_PATTERNS="^VM option "
 
 conf_file=config.yml
+results_csv_file=test-results.csv
 
 #--------------------------------------------------------------------------------
 function Save_passed_res {
@@ -73,7 +66,7 @@ function Save_passed_res {
     chmod 775 "$res_path/$1" 2>&1 >> /dev/null
     chmod -R 775 "$test_dir_path" 2>&1 >> /dev/null
     cp -r $FILES_OF_INTEREST_PASSED $test_dir_path > /dev/null 2>&1
-    [[ -n "$3" ]] && echo "    $3!"
+    [[ "$verify" != "y" ]] && [[ -n "$3" ]] && echo "    $3!"
 }
 
 #--------------------------------------------------------------------------------
@@ -83,143 +76,80 @@ function Save_res {
     chmod 775 "$res_path/$1" 2>&1 >> /dev/null
     chmod -R 775 "$test_dir_path" 2>&1 >> /dev/null
     cp -r $FILES_OF_INTEREST $test_dir_path > /dev/null 2>&1
-    echo "    $3!"
+    [[ "$verify" != "y" ]] && echo "    $3!"
 }
 
 #--------------------------------------------------------------------------------
-# returns: 0 - test complete, 1 - no JIT, 2 - VerifyError, 3 - Java crash, 4 - should never been returned, 5 - OOM, 6 - Interpreter/Java timeout, 7 - NPE during class initialization
-function Run_test_apk {
-    # Run in interpreter mode
-    if [[ ${#outer_control} -ne 0 ]]
-    then
-        i=0
-        while [[ $i -lt $subiters ]]
-        do
-            Run_apk_VM Fuzzer.apk "int$i" $i $INT_ARGS
-            if [ $? -eq 124 ]; then
-                echo "    Interpreter timeout!"
-                return 6
-            fi
-            i=$(($i + 1))
-        done
-    else
-        Run_apk_VM Fuzzer.apk 'int' 0 $INT_ARGS
-        if [ $? -eq 124 ]; then
-            echo "    Interpreter timeout!"
-            return 6
-        fi
-    fi
-    Run_apk Fuzzer.apk 0 0 $MIN_TIME
-    empty=0
-    timeouts=0
-    i=0
-    while [[ $i -lt $subiters ]]
-    do
-        Run_apk " " $i $i $MIN_TIME compile
-        res=$?
-        [[ $res -eq 124 ]] && timeouts=$(( $timeouts + 1 ))
-        [[ ! -s rt_out$i ]] && empty=$(( $empty + 1 ))
-        i=$(($i + 1))
-    done
-    if grep -E 'VerifyError' rt_out* rt_err* > /dev/null; then # workaround for DEX's bug
-        let vrferr=vrferr+1
-        return 2
-    elif grep 'OutOfMemory' rt_out* rt_err* > /dev/null; then # workaround for OOM
-        return 5
-    elif [[ $timeouts -gt 0 ]] || grep TIMOUT rt_out* rt_err* &>/dev/null; then
-        Save_res hangs $1 Timeout
-        let timeouts=timeouts+1
-    elif grep 'java.lang.ExceptionInInitializerError' rt_err* &> /dev/null; then # NPE during class initialization - too complex dependencies
-        return 7
-    elif [[ $empty -ne 0 ]]; then
-        Save_res crashes $1 Crash
-        let crashes=crashes+1
-    elif grep "Fatal signal" rt_err* | grep -v 'libc' > /dev/null; then # compiler crash, filter out known bluetooth crashes
-        Save_res crashes $1 Crash
-        let crashes=crashes+1
-    elif grep "fatal error" rt_outint* > /dev/null; then # Java crash
-        let jcrash=jcrash+1
-        return 3
-    else
-        ret=0
-        i=0
-        while [[ $i -lt $subiters ]]
-        do
-            [[ ${#outer_control} -eq 0 ]] && cp rt_outint rt_outint$i
-            diff rt_outint$i rt_out$i &> /dev/null
-            ret=$(( $ret + $? ))
-            i=$(( $i + 1 ))
-        done
-        if [[ $ret -eq 0 ]]
-        then
-            [[ "$SAVE_PASSED" = "true" ]] && Save_passed_res passes $1
-            return 0 # Passed 
-        else
-            Save_res fails $1 Failed
-            let fails=fails+1
-        fi
-    fi
-}
-
-#--------------------------------------------------------------------------------
-# returns: 0 - test complete, 1 - no JIT, 2 - VerifyError, 3 - Java crash, 4 - should never been returned, 5 - OOM, 6 - Interpreter/Java timeout, 7 - NPE during class initialization
+# returns: 0 - test complete, 1 - no JIT, 2 - VerifyError, 3 - Java crash, 4 - should never been returned, 5 - OOM, 6 - Interpreter/Java timeout, 7 - reference failures: NPE during class initialization, java.lang.StackOverflowError, OutOfMemory, ExceptionInInitializerError, reference Java exit with non-zero exit code
 function Run_test {
     gc_opts=""
-    if [[ "$GC_EXP" == "on" ]]
-    then
-        back_gc=${GC_TYPES[$(($RANDOM % 3))]}
-        gc=${GC_TYPES[$(($RANDOM % 3))]}
-        gc_opts=$gc_opts" -Xgc:$gc -XX:BackgroundGC=$back_gc"
-        gc_opts=$gc_opts" "${GC_HSPACE[$(($RANDOM % 2))]}
-        [[ $(($RANDOM % 2)) -eq 0 ]] && gc_opts=$gc_opts" $GC_VERIFICATION"
-        gc_thr1=$((($RANDOM % 11) + 1))
-        gc_thr2=$((($RANDOM % 11) + 1))
-        [[ $(($RANDOM % 2)) -eq 0 ]] && gc_opts=$gc_opts" -XX:ParallelGCThreads=$gc_thr1"
-        [[ $(($RANDOM % 2)) -eq 0 ]] && gc_opts=$gc_opts" -XX:ConcGCThreads=$gc_thr2"
-    fi
 
-    if [[ "$EXTREME" != "on" ]]
-    then
-        if [ "$comp_fast" = "y" ]; then
-            RunVM $INT_ARGS >rt_out_ref 2>rt_err_ref
-            if [ $? -eq 124 ]; then
-                echo "    Interpreter timeout!"
-                return 6
-            fi
-        else
-            timeout $TIME_OUT java $test_name >rt_out_ref 2>&1 # 2>rt_err_ref not working: java outputs err msgs to stdout
-            if [ $? -eq 124 ]; then
-                echo "    Java timeout!"
-                return 6
-            fi
+    if [ "$verify" != "y" ]; then
+        RunJava ${REF_TIME_OUT} ${JAVA_REFERENCE} ${JAVA_REFERENCE_OPTS} ${test_name} >>rt_out_ref 2>>rt_err_ref
+        ref_res_code=$?
+        if  grep 'Killed' rt_out_ref rt_err_ref | grep 'TIME_OUT' &>/dev/null ; then 
+            Save_res ref_hangs $1 "Reference Java Timeout"
+            let ref_timeouts=ref_timeouts+1
+           return 6
+        elif grep 'java.lang.StackOverflowError' rt_out_ref rt_err_ref &> /dev/null; then # StackOverflowError - too complex dependencies
+            Save_res ref_failures $1 "Reference StackOverflowError"
+            let ref_failures=ref_failures+1
+            return 7
+        elif grep 'OutOfMemory' rt_out_ref rt_err_ref &> /dev/null; then 
+            Save_res ref_failures $1 "Reference OutOfMemory"
+            let ref_failures=ref_failures+1
+            return 7
+        elif grep 'java.lang.ExceptionInInitializerError' rt_out_ref rt_err_ref &> /dev/null; then # NPE during class initialization - too complex dependencies
+            Save_res ref_failures $1 "ExceptionInInitializerError"
+            let ref_failures=ref_failures+1
+            return 7
+        elif grep "fatal error" rt_out_ref rt_err_ref > /dev/null ; then # Reference Java crash
+            Save_res ref_crashes $1 "Reference Java crash"
+            let ref_crashes=ref_crashes+1
+            return 3
+        elif [ "$ref_res_code" != "0" ]; then
+            
+            Save_res ref_failures $1 "Reference Java Failure"
+            let ref_failures=ref_failures+1
+            return 7
         fi
     fi
 
-    #echo "RunVM $VM_LIB $args $add_opts $gc_opts" > rt_cmd
-    RunVM $VM_LIB $args $add_opts $gc_opts >rt_out 2>rt_err
-    [[ "$EXTREME" == "on" ]] && cp rt_out rt_out_ref
+    echo "#!/bin/sh" >${run_sh_file}
+    echo "export RESULTS_DIR=\${RESULTS_DIR:-\".\"}" >>${run_sh_file}
+    echo "export TEST_DIR=\"\$(dirname \$(readlink -f \"\$0\"))\"" >>${run_sh_file}
+    echo "export JAVA_UNDER_TEST=\"\${JAVA_UNDER_TEST:-\"${JAVA_UNDER_TEST}\"}\""  >>${run_sh_file}
+    echo "export JAVA_UNDER_TEST_OPTS=\"\${JAVA_UNDER_TEST_OPTS:-\"${JAVA_UNDER_TEST_OPTS} ${add_opts}\"}\""  >>${run_sh_file}
+    echo "\${JAVA_UNDER_TEST} \${JAVA_UNDER_TEST_OPTS} \${JAVA_ADD_OPTS} -cp \${TEST_DIR} ${test_name} >\${RESULTS_DIR}/rt_out_rerun 2>\${RESULTS_DIR}/rt_err_rerun" >>${run_sh_file}
+    echo "diff -I \"${IGNORE_DEBUG_OUTPUT_PATTERNS}\" \${TEST_DIR}/rt_out_ref \${RESULTS_DIR}/rt_out_rerun"  >>${run_sh_file}
+    echo "res_out=\$?" >>${run_sh_file}
+    echo "diff -I \"${IGNORE_DEBUG_OUTPUT_PATTERNS}\" \${TEST_DIR}/rt_err_ref \${RESULTS_DIR}/rt_err_rerun" >>  ${run_sh_file}
+    echo "res_err=\$?" >>${run_sh_file}
+    echo "exit \$(( res_out + res_err))" >>${run_sh_file}
+    chmod 777  ${run_sh_file}
+    start_time=$(date +%s)
+    RunJava ${TIME_OUT} ${JAVA_UNDER_TEST} ${JAVA_UNDER_TEST_OPTS} ${add_opts} ${test_name} >>rt_out 2>>rt_err
     res_code=$?
-    if grep -E 'VerifyError' rt_out rt_err > /dev/null; then # workaround for DEX's bug
-        let vrferr=vrferr+1
-        return 2
-    elif grep 'OutOfMemory' rt_out rt_err > /dev/null; then # workaround for OOM
-        return 5
-    elif [ $res_code -eq 124 ] || grep 'TIMEOUT' rt_out &>/dev/null; then
+
+    end_time=$(date +%s)
+    (( run_time = end_time - start_time ))
+    [[ "$run_time" -gt 0 ]] || run_time=1
+    (( all_time = all_time + run_time ))
+
+    if  grep 'Killed' rt_out rt_err | grep 'TIME_OUT' &>/dev/null ; then
         Save_res hangs $1 Timeout
         let timeouts=timeouts+1
-    elif grep 'java.lang.ExceptionInInitializerError' rt_err &> /dev/null; then # NPE during class initialization - too complex dependencies
-        return 7
-    elif [ ! -s rt_out ]; then
+        return 124
+    elif egrep "Internal Error|unexpected error has been detected by Java Runtime Environment" rt_out rt_err > /dev/null; then # VM/compiler crash
         Save_res crashes $1 Crash
         let crashes=crashes+1
-    elif grep "Fatal signal" rt_err > /dev/null; then # compiler crash
-        Save_res crashes $1 Crash
-        let crashes=crashes+1
-    elif grep "fatal error" rt_out_ref > /dev/null; then # Java crash
-        let jcrash=jcrash+1
-        return 3
-    elif diff rt_out_ref rt_out > /dev/null; then
+    elif [[ "$MM" == "true" &&  "$res_code" == "0" ]] ; then
+        [[ "$SAVE_PASSED" = "true" ]] && Save_passed_res passes $1 
+        let passes=passes+1
+        return 0 # Passed 
+    elif diff -I "${IGNORE_DEBUG_OUTPUT_PATTERNS}" rt_out_ref rt_out >rt_out.diff 2>&1 && diff -I "${IGNORE_DEBUG_OUTPUT_PATTERNS}" rt_err_ref rt_err >rt_err.diff 2>&1; then
         [[ "$SAVE_PASSED" = "true" ]] && Save_passed_res passes $1
+        let passes=passes+1
         return 0 # Passed 
     else
         Save_res fails $1 Failed
@@ -227,49 +157,85 @@ function Run_test {
     fi
     return 4 # the test did not pass
 }
+
+#--------------------------------------------------------------------------------
+function Evaluate_run_result() {
+    run_res=$1
+    test_dir_name=$2
+    res_path=$3
+    results_csv_file=$4
+    case "${run_res}" in
+           0)
+             echo "Test ${test_dir_name} PASSED"
+             echo "TEST;${test_dir_name};PASSED;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+          3)
+             echo "Test ${test_dir_name} REF_FAILURE"
+             echo "TEST;${test_dir_name};REF_FAILURE;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+           4)
+             echo "Test ${test_dir_name} FAILED"
+             echo "TEST;${test_dir_name};FAILED;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+           6)
+             echo "Test ${test_dir_name} REF_FAILURE"
+             echo "TEST;${test_dir_name};REF_FAILURE;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+           7)
+             echo "Test ${test_dir_name} REF_FAILURE"
+             echo "TEST;${test_dir_name};REF_FAILURE;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+           124)
+             echo "Test ${test_dir_name} TIMEOUT"
+             echo "TEST;${test_dir_name};TIMEOUT;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+           *)
+             echo "Test ${test_dir_name} ERROR"
+             echo "TEST;${test_dir_name};ERROR;${run_time};" >>"${res_path}/${results_csv_file}"
+             ;;
+        esac
+
+
+}
 #--------------------------------------------------------------------------------
 function Finish {
     cd ..
-    rm -r $work_dir
-    #rm -r $ANDROID_DATA
-    [[ "$1" = "" ]] || Err $1
+#    echo "Delete working dir: $work_dir"
+    rm -rf $work_dir
+    [[ "$1" = "" ]] || Err "$1"
+    echo "done"
     exit
 }
 #--------------------------------------------------------------------------------
-update=n
 verify=n
 res_dir=""
 res_file=""
 keep_dirs=n
 prefix=""
-comp_fast=n
 test_name=Test
-time_limit=0
-total=0
-new_build=n
+total=-1
 add_opts=""
-subtests=10
-subiters=2
-args=$OPT_ARGS
-ulimit -c 0
-apk=n
+limit_core_size=0
 outer_control=""
-MIN_TIME=20000
+run_time=0
+all_time=0
+generate_only="false"
+
+if [[ -n "${SOURCE_TEST_DIR}" ]]; then
+    verify=y
+    source_dir="${SOURCE_TEST_DIR}"
+fi
+
+if [[ -n "${RESULTS_TEST_DIR}" ]]; then
+    res_dir="${RESULTS_TEST_DIR}"
+fi
 
 while [ "$1" != "" ]; do
     case $1 in
-	-b|-bw|-bb|-bs)
-        new_build=y
-        New_build_args $1 $2
-	    shift;;
-	-u)
-	    update=y
-        ORIG_RUBY_CODE_DIR=$FILER_DIR/$2
-        shift;;
 	-v)
-		[[ -d $2 ]] || Err "no directory to verify: $2"
+#		[[ -d $2 ]] || Err "no directory to verify: $2"
 	    verify=y
-		source_dir=`pwd`/$2
+		source_dir=$2
 	    shift;;
 	-r)
 	    res_dir=$2
@@ -278,183 +244,202 @@ while [ "$1" != "" ]; do
 	-p)
 	    prefix=$2
 	    shift;;
-	-co)
-	    if [ "$2" != "" ]; then
-            add_opts="$add_opts -Xcompiler-option $2"
-            shift
-        fi
-	    ;;
-	-oc) add_opts="$add_opts -Xcompiler-option --compiler-backend=Optimizing";;
-	-dp) add_opts="$add_opts -Xcompiler-option --disable-passes=$2"
-		 shift;;
-	-extreme) EXTREME=on;;
-	-jit) add_opts="$add_opts -Xusejit:true -XOatFileManagerCompilerFilter:interpret-only -Xjit-block-mode";;
-	-i)  comp_fast=y;;
-	-no) args=$NOPT_ARGS;;
-	-gc) GC_EXP=on;;
-	-t)  SetTimeout $2
-         shift;;
-	-tn) test_name=$2
-         shift;;
 	-arg) add_opts="$add_opts $2"
          shift;;
 	-f)  res_file=$2
 		 shift;;
-	-tl) time_limit=$2
-		 shift;;
 	-conf) conf_file=$2
 	    shift;;
-	-st) subtests=$2
-	    shift;;
-	-si) subiters=$2
-	    shift;;
 	-sp) SAVE_PASSED="true";;
-	-mt) MIN_TIME=$2
-    	    shift;;
-    	-apk) apk=y;;
-    	-o) outer_control="-o";;
+	-g) generate_only="true";;
+    -o) outer_control="-o";;
 	*)   total=$1;;
     esac
     shift
 done
-[[ $new_build = "y" ]] && Set_build
 #--------------------------------------------------------------------------------
 
 passes=0
-vrferr=0
-jcrash=0
 crashes=0
 fails=0
 timeouts=0
 invalids=0
-res_path=$FILER_DIR/$res_dir
+ref_failures=0
+ref_crashes=0
+ref_timeouts=0
 
-if [ "$update" = "y" ]; then
-    if [ ! -d $ORIG_RUBY_CODE_DIR ]; then
-        Err "rt.sh: dir to copy Ruby files from not found: $ORIG_RUBY_CODE_DIR"
-    fi
-    rm -r "$RUBY_CODE_DIR" &> /dev/null
-    mkdir -p "$RUN_DIR"
-    cp -r "$ORIG_RUBY_CODE_DIR" "$RUBY_CODE_DIR"
-    echo "Ruby files updated"
+#res_path=$FILER_DIR/$res_dir
+res_path=$res_dir
+
+if [[ "${res_dir}" = /* ]]; then
+    res_path=${res_dir}
+else 
+    res_path=`readlink -f ${CURR_DIR}/${res_dir}`
 fi
 
-if [ -d $res_path/hangs -o -d $res_path/crashes -o -d $res_path/fails -o -d $res_path/errors ]; then
+if [ -d $res_path/hangs -o -d $res_path/crashes -o -d $res_path/fails -o -d $res_path/errors -o -d $res_path/ref_failures -o -d $res_path/invalids -o -d $res_path/ref_hangs -o -d $res_path/ref_crashes ]; then
     if [ "$keep_dirs" = "n" ]; then
         Err "rt.sh: remove dirs: hangs, crashes, fails and errors from $res_path"
     fi
 fi
 
 echo --------------------------------------
-echo Build under test: $BRANCH $BUILD $BITS
+echo Java under test: ${JAVA_UNDER_TEST}
+echo Java under test options: ${JAVA_UNDER_TEST_OPTS} $add_opts
 echo --------------------------------------
 
-prefix_="/tmp"
+echo "Results dir: ${res_path}"
+
+[[ -n "${WORK_DIR}" ]] && prefix_="$(cd ${WORK_DIR}; pwd)" || prefix_="${TMPDIR:-/tmp}"
+
+#TODO: 
 [[ -d /export/ram ]] && prefix_="/export/ram/tmp"
 mkdir -p $prefix_ &> /dev/null
-work_dir=$(mktemp -d --tmpdir=$prefix_)
+work_dir=$(mktemp -d -p $prefix_ "fuzzer.tmp.XXXXXXXXXX")
+
+echo "Working dir: $work_dir"
 cd $work_dir
 
-if [ "$verify" = "y" ]; then
-    ulimit -c 0
-    for dir in `ls $source_dir`; do
-        [[ -d $source_dir/$dir ]] || continue
-        rm $FILES_OF_INTEREST > /dev/null 2>&1
-        cp $source_dir/$dir/*.java $source_dir/$dir/*.class $source_dir/$dir/*.dex .
-        Run_test $dir
-        echo test $dir done
-    done
+trap Finish 1 2 3 6 14 15
+
+if [ "$verify" == "y" ]; then
+
+    # Transform source path to absolute path
+    if [[ "${source_dir}" != /* ]]; then
+        source_dir=`readlink -f ${CURR_DIR}/${source_dir}`
+    fi
+
+    # source config file if found
+    config_file="${source_dir}/config.sh"
+    if [[ -f "${config_file}" ]]; then
+        echo "Use config: ${config_file}"
+        source "${config_file}"
+    fi
+
+    # optionally add configured subdir
+    if [[ -n "$source_subdir" ]]; then
+        source_dir="${source_dir}/${source_subdir}"
+    fi
+    if [[ ! -d ${source_dir} ]] ; then
+        Finish "$0: directory to run tests from (specified after -v option) not found: ${source_dir}"
+    fi
+    echo "Source dir: ${source_dir}"
+
+    mkdir -p "${res_path}"
+    echo "LEGEND;Test ID;Results;Seconds" >"${res_path}/${results_csv_file}"
+
+    ulimit -S -c ${limit_core_size}
+    for dir in `ls -d $source_dir/*/`; do
+        test_dir_name="$(basename $dir)"
+        rm -f $FILES_OF_INTEREST > /dev/null 2>&1
+        cp $dir/*.java $dir/*.class $dir/rt_out_ref $dir/rt_err_ref .
+
+        Run_test ${test_dir_name}
+        run_res=$?
+        Evaluate_run_result ${run_res} ${test_dir_name} ${res_path} ${results_csv_file}
+
+            done
+
+    {
+        echo "TOTAL;"$((passes+fails+timeouts+crashes+ref_failures+ref_crashes+ref_timeouts))";"
+        echo "PASSES;$passes;"
+        echo "CRASHES;$crashes;"
+        echo "FAILURES;$fails;"
+        echo "TIMEOUTS;$timeouts;"
+        echo "REFERENCE FAILURES;"$((ref_failures+ref_crashes+ref_timeouts))";"
+        echo "SECONDS;$all_time;"
+    } >>"${res_path}/${results_csv_file}"
+
+    echo "TOTAL "$((passes+fails+timeouts+crashes+ref_failures+ref_crashes+ref_timeouts))" "
+    echo "PASSES $passes "
+    echo "CRASHES $crashes "
+    echo "FAILURES $fails "
+    echo "TIMEOUTS $timeouts "
+    echo "REFERENCE FAILURES "$((ref_failures+ref_crashes+ref_timeouts))" "
+    echo "SECONDS $all_time "
+
     Finish
 fi
 
-if [ $total -lt 1 -a $time_limit -lt 1 ]; then
-    Finish "invalid number of iterations: $total or time limit: $time_limit"
+if [ $total -lt -1 ]; then
+    Finish "invalid number of iterations: $total"
+elif 
+    [ $total -eq -1 ] ; then 
+    echo "NUMBER OF TESTS TO BE GENERATED: UNLIMITED, TILL THE SCRIPT IS KILLED"
+else
+    echo "NUMBER OF TESTS TO BE GENERATED: ${total}"
 fi
 
+ulimit -S -c ${limit_core_size}
+
+mkdir -p ${res_path}
+echo "LEGEND;Test ID;Results;Seconds" >"${res_path}/${results_csv_file}"
 iters=0
 fails_in_a_row=0
+statistics_string=""
 while [ $iters != $total ]; do
     problem=no
     let iters=iters+1
     let perc=$iters*100/$total
-    rm $FILES_OF_INTEREST > /dev/null 2>&1
-    if [[ "$apk" == "y" ]]
-    then
-        rm -f `find "$APK_DIR/Fuzzer/src/com/intel/fuzzer" -name 'Test*java' | grep -E 'Test[0-9]*.java'` &>> rt_apk
-        lines=0
-        counter=0
-        while [[ $counter -lt $subtests ]]
-        do
-            counter=$(($counter + 1))
-            echo "ruby -I$RUBY_CODE_DIR $RUBY_CODE_DIR/Fuzzer.rb -f $RUBY_CODE_DIR/$conf_file" -p 'com.intel.fuzzer' -n "Test$counter" >> rt_cmd
-            ruby -I$RUBY_CODE_DIR $RUBY_CODE_DIR/Fuzzer.rb -f $RUBY_CODE_DIR/$conf_file -p 'com.intel.fuzzer' -n "Test$counter" $outer_control > "$APK_DIR/Fuzzer/src/com/intel/fuzzer/Test$counter.java"
-            cntr=`cat "$APK_DIR/Fuzzer/src/com/intel/fuzzer/Test$counter.java" | wc -l`
-            lines=$(( $lines + $cntr ))
-        done
-        cp -r "$APK_DIR/Fuzzer/src/com/intel/fuzzer" ./src
-        bash "$FILER_DIR/build-apk.sh" "$FILER_DIR" &>> rt_apk
-        if [ $? -ne 0 ]; then
-            Save_res errors $iters Invalid
-            let invalids=invalids+1
-            run_res=1
-        else
-            Run_test_apk $iters
-            run_res=$?
-            if [ $run_res -eq 2 ]; then  # invalid test run: VerifyError
-                problem="VerifyError"
-            elif [ $run_res -eq 3 ]; then  # invalid test run: Java crash
-                problem="Java crash"
-            elif [ $run_res -eq 5 ]; then  # invalid test run: OOM
-                problem="OOM"
-            elif [ $run_res -eq 6 ]; then  # invalid test run: Timeout
-                problem="Reference run timeout"
-            elif [ $run_res -eq 7 ]; then  # invalid test run: java.lang.ExceptionInInitializerError
-                problem="NPE during initialization"
-            fi
-        fi
-    else
+    if [[ ${total} -gt 0 ]] ; then 
+        statistics_string="- ${perc}%/$total"
+    fi
+    rm -f $FILES_OF_INTEREST > /dev/null 2>&1
         echo "ruby -I$RUBY_CODE_DIR $RUBY_CODE_DIR/Fuzzer.rb -f $RUBY_CODE_DIR/$conf_file" >> rt_cmd
         ruby -I$RUBY_CODE_DIR $RUBY_CODE_DIR/Fuzzer.rb -f $RUBY_CODE_DIR/$conf_file > $test_name.java
+        ruby_res=$?
+        if [ $ruby_res -ne 0 ]; then
+            # Debug only:
+            #Save_res invalids $iters "Invalid Java test generated, e.g., contains cycled call chain"
+            echo "Invalid Java test generated, e.g., contains cycled call chain"
+            let invalids=invalids+1
+            run_res=1
+            let iters=iters-1
+            continue
+        fi
+        if [[ "${generate_only}" == "true" ]] ; then
+            Save_res generated ${prefix}${iters} "Test generated"
+            echo "$prefix$iters ($lines lines) [$iters valid tests generated, $invalids incorrect tests ${statistics_string}"
+           continue
+        fi 
         lines=`cat $test_name.java | wc -l`
-        cp $RUBY_CODE_DIR/FuzzerUtils*.class .
-        javac $test_name.java
+        cp $RUBY_CODE_DIR/FuzzerUtils*.java .
+        ${JAVAC} ${JAVAC_OPTS} $test_name.java
         if [ $? -ne 0 ]; then
-            Save_res errors $iters Invalid
+            Save_res invalids $iters "Invalid Java test generated: failed to compile with javac"
             let invalids=invalids+1
             run_res=1
         else
-            $DX --dex --output=classes.dex *.class
             Run_test $iters
             run_res=$?
-            if [ $run_res -eq 2 ]; then  # invalid test run: VerifyError
-                problem="VerifyError"
-            elif [ $run_res -eq 3 ]; then  # invalid test run: Java crash
-                problem="Java crash"
-            elif [ $run_res -eq 5 ]; then  # invalid test run: OOM
-                problem="OOM"
+            if [ $run_res -eq 3 ]; then  # invalid test run: Reference Java crash
+                problem="Reference Java crash"
             elif [ $run_res -eq 6 ]; then  # invalid test run: Timeout
-                problem="Reference run timeout"
-            elif [ $run_res -eq 7 ]; then  # invalid test run: java.lang.ExceptionInInitializerError
-                problem="NPE during initialization"
+                problem="Reference Java timeout"
+            elif [ $run_res -eq 7 ]; then  # other reference java failure
+                problem="Reference Java failure"
             fi
         fi
-    fi
+        Evaluate_run_result ${run_res} ${prefix}${iters} ${res_path} ${results_csv_file}
     if [ $run_res -eq 0 ]; then
         fails_in_a_row=0
     else
         let fails_in_a_row=fails_in_a_row+1
-        [[ $fails_in_a_row -eq 10 ]] && Finish "10 failures in a row"
+        [[ $fails_in_a_row -eq 100 ]] && Finish "100 failures in a row"
     fi
     if [ "$problem" != "no" ]; then
-        echo "     $prefix$iters: $problem ($lines) [$vrferr VerifyError, $jcrash Java crashes]"
-        let iters=iters-1
+        echo "$prefix$iters ($lines lines) [$passes passed, $crashes crashes, $fails fails, $timeouts hangs, $invalids incorrect tests, $((ref_failures+ref_crashes+ref_timeouts )) Reference Java failures] ${statistics_string}"
+#        let iters=iters-1
     else
-        echo "$prefix$iters ($lines) [$crashes crashes, $fails fails, $timeouts hangs, $invalids errors] - ${perc}%/$total"
+        if [ ${total} -gt 0 ] ; then 
+            echo "$prefix$iters ($lines lines) [$passes passed, $crashes crashes, $fails fails, $timeouts hangs, $invalids incorrect tests, $((ref_failures+ref_crashes+ref_timeouts )) Reference Java failures] ${statistics_string}"
+        fi
     fi
 done
 
 if [ "$res_file" != "" ]; then
-    echo "$prefix $total: $crashes crashes, $fails fails, $timeouts hangs, $invalids errors, $vrferr VerifyError, $jcrash Java crashes" >>$res_path/$res_file
+    echo "$prefix $total: $passes passed, $crashes crashes, $fails fails, $timeouts hangs, $invalids incorrect tests, $((ref_failures+ref_crashes+ref_timeouts )) Reference Java failures" >>$res_path/$res_file
 fi
 
 Finish
+
