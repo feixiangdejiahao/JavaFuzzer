@@ -1,6 +1,9 @@
 #!/bin/bash
 
+# Max time to run the test for
 TIMEOUT=30
+
+echo "Running tests with $*"
 
 R=`pwd`
 
