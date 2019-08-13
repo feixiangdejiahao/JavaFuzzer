@@ -458,15 +458,13 @@ public class FuzzerUtils {
         final Thread t = new Thread(r);
         t.start();
         runningThreads.incrementAndGet();
-        Thread t1 = new Thread(new Runnable() {
-            public void run() {
+        Thread t1 = new Thread(() -> {
                 try {
                     t.join();
                     runningThreads.decrementAndGet();
                 } catch (InterruptedException e) {
                 }
-            }
-        });
+            });
         t1.start();
     }
 
