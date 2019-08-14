@@ -6,7 +6,7 @@ TIMEOUT=120
 
 timeout $TIMEOUT $* Test > test.out
 if [ $? -eq 0 ]; then
-  gunzip -k golden.out.gz
+  zcat golden.out.gz > golden.out
   cmp golden.out test.out
   if [ $? -eq 0 ]; then
     echo "$PWD: Passed"
