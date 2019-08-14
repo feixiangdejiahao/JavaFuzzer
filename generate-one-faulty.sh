@@ -5,7 +5,7 @@ set -u
 # Note it covers for generated tests that never finish, and also for tests that would
 # run longer in some unusual JVM mode (for example, with lots of verification).
 # Time is in seconds.
-TIMEOUT=5
+TIMEOUT=20
 
 R=$1
 

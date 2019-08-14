@@ -4,7 +4,7 @@ set -u
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 
 # Number of tests to generate in the bundle
-NUM_TESTS=16
+NUM_TESTS=1000
 
 PARALLEL=16
 

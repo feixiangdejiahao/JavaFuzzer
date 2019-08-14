@@ -2,7 +2,7 @@
 set -u
 
 # Number of tests to generate in the bundle
-NUM_TESTS=10000
+NUM_TESTS=100000
 
 PARALLEL=16
 
