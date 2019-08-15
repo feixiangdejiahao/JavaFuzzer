@@ -11,17 +11,25 @@ R=$1
 
 while true; do
   ruby -I$R/rb $R/rb/Fuzzer.rb -f $R/rb/config.yml > Test.java
-  ln ../FuzzerUtils.class
+  ln -s ../FuzzerUtils.class
   javac Test.java
-  gzip -9 Test.java
 
   timeout $TIMEOUT java Test > golden.out
-  if [ $? -eq 0 ]; then
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 0 ]; then
+    # Test is okay, pack up and move on
     echo -n "."
     gzip -9 golden.out
+    gzip -9 Test.java
     break;
+  elif [ $EXIT_CODE -eq 124 ]; then
+    # Timeout, try again
+    echo -n ":"
+    rm FuzzerUtils.class Test.java*
   else
-    rm FuzzerUtils.class Test.java.gz
+    # Some other error, keep everything in place for inspection
+    # and move on
     echo -n "!"
+    break;
   fi
 done

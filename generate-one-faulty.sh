@@ -17,12 +17,15 @@ while true; do
   timeout $TIMEOUT java Test > golden.out
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 0 ]; then
+    # Test is okay, try again
     echo -n "."
     rm FuzzerUtils.class
   elif [ $EXIT_CODE -eq 124 ]; then
     echo -n ":"
+    # Timeout, try again
     rm FuzzerUtils.class
   else
+    # Finally the error, move on!
     echo -n "!"
     break;
   fi
