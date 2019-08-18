@@ -12,7 +12,7 @@ R=$1
 while true; do
   ruby -I$R/rb $R/rb/Fuzzer.rb -f $R/rb/config.yml > Test.java
   ln -s ../FuzzerUtils.class
-  javac Test.java
+  javac --release 8 Test.java
 
   timeout $TIMEOUT java Test > golden.out
   EXIT_CODE=$?
