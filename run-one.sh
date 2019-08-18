@@ -2,19 +2,27 @@
 set -u
 
 # Max time to run the test for
-TIMEOUT=120
+TIMEOUT=180
 
-timeout $TIMEOUT $* Test > test.out
-if [ $? -eq 0 ]; then
-  zcat golden.out.gz > golden.out
-  cmp golden.out test.out
+# Tries to perform, to catch intermittently failing tests
+TRIES=3
+
+zcat golden.out.gz > golden.out
+
+for TRY in `seq -w 1 ${TRIES}`; do
+  timeout $TIMEOUT $* Test > test.out
   if [ $? -eq 0 ]; then
-    echo "$PWD: Passed"
+    cmp golden.out test.out
+    if [ $? -eq 0 ]; then
+      echo "$PWD ($TRY): Passed"
+    else
+      echo "$PWD ($TRY): Failed"
+      exit 1
+    fi
   else
-    echo "$PWD: Failed"
+    echo "$PWD ($TRY): Timeout"
+    exit 1
   fi
-else
-  echo "$PWD: Timeout"
-fi
+done
 
 rm *.out
