@@ -5,16 +5,17 @@ set -u
 # Note it covers for generated tests that never finish, and also for tests that would
 # run longer in some unusual JVM mode (for example, with lots of verification).
 # Time is in seconds.
-TIMEOUT=20
+TIMEOUT=5
 
 R=$1
 
 while true; do
   ruby -I$R/rb $R/rb/Fuzzer.rb -f $R/rb/config.yml > Test.java
   ln ../FuzzerUtils.class
-  javac --release 8 Test.java
+#  javac --release 8 Test.java
+  nice -n 10 javac Test.java
 
-  timeout $TIMEOUT java Test > golden.out
+  nice -n 10 timeout $TIMEOUT java -XX:TieredStopAtLevel=1 Test > golden.out
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 0 ]; then
     # Test is okay, try again
