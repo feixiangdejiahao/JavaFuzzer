@@ -9,22 +9,21 @@ TIMEOUT=5
 
 R=$1
 
+rm -f FuzzerUtils.class
+ln ../FuzzerUtils.class
+
 while true; do
   ruby -I$R/rb $R/rb/Fuzzer.rb -f $R/rb/config.yml > Test.java
-  ln ../FuzzerUtils.class
-#  javac --release 8 Test.java
-  nice -n 10 javac Test.java
+  javac --release 8 Test.java
 
-  nice -n 10 timeout $TIMEOUT java -XX:TieredStopAtLevel=1 Test > golden.out
+  timeout $TIMEOUT java Test > /dev/null
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 0 ]; then
     # Test is okay, try again
     echo -n "."
-    rm FuzzerUtils.class
   elif [ $EXIT_CODE -eq 124 ]; then
-    echo -n ":"
     # Timeout, try again
-    rm FuzzerUtils.class
+    echo -n ":"
   else
     # Finally the error, move on!
     echo -n "!"
