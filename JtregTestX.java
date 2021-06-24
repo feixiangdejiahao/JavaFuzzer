@@ -38,7 +38,7 @@ import jdk.test.lib.Utils;
 public class JtregTest {
     public static void main(String... args) throws Exception {
         OutputAnalyzer output = ProcessTools.executeTestJvm(
-                "-Xmx256m",
+                "-Xmx512m",
 		"Test"
 	);
 	output.shouldHaveExitValue(0);

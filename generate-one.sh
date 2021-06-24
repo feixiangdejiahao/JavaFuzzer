@@ -1,7 +1,12 @@
 #!/bin/bash
 set -u
 
-TEST_OPTS="-Xmx256m"
+# Be very aggressive about the used heap size. If the fuzzer test allocates
+# a lot of data -- even if it those allocations are not retaned -- crash
+# it by using Epsilon. The real test would run in a larger heap to provide
+# an even larger safety margin. This also makes Fuzzer tests runnable with
+# Epsilon itself.
+TEST_OPTS="-Xms256m -Xmx256m -XX:+AlwaysPreTouch -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC"
 
 # Maximum test running time to be considered stable.
 # Note it covers for generated tests that never finish, and also for tests that would
@@ -28,18 +33,32 @@ while true; do
   # Trial balloon: does it timeout in C2?
   timeout $C2_TIMEOUT java $TEST_OPTS -XX:-TieredCompilation Test > /dev/null
   EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
+  if [ $EXIT_CODE -eq 0 ]; then
+    # Good, slide to another step
+    echo -n "."
+  elif [ $EXIT_CODE -eq 124 ]; then
     # Timeout, try again
-    echo -n ";"
+    echo -n "o"
+    continue;
+  else
+    # Some other error, try again
+    echo -n "O"
     continue;
   fi
 
   # Trial balloon: does it timeout in C1?
   timeout $C1_TIMEOUT java $TEST_OPTS -XX:TieredStopAtLevel=1 Test > /dev/null
   EXIT_CODE=$?
-  if [ $EXIT_CODE -eq 124 ]; then
+  if [ $EXIT_CODE -eq 0 ]; then
+    # Good, slide to another step
+    echo -n "."
+  elif [ $EXIT_CODE -eq 124 ]; then
     # Timeout, try again
-    echo -n ";"
+    echo -n "b"
+    continue;
+  else
+    # Some other error, try again
+    echo -n "B"
     continue;
   fi
 
@@ -48,15 +67,15 @@ while true; do
   EXIT_CODE=$?
   if [ $EXIT_CODE -eq 0 ]; then
     # Good, move on
-    echo -n "."
+    echo -n "+"
     break;
   elif [ $EXIT_CODE -eq 124 ]; then
     # Timeout, try again
-    echo -n ","
+    echo -n "i"
     continue;
   else
     # Some other error, try again
-    echo -n "!"
+    echo -n "I"
     continue;
   fi
 done
