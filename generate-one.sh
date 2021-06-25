@@ -1,12 +1,12 @@
 #!/bin/bash
 set -u
 
-# Be very aggressive about the used heap size. If the fuzzer test allocates
-# a lot of data -- even if it those allocations are not retaned -- crash
-# it by using Epsilon. The real test would run in a larger heap to provide
-# an even larger safety margin. This also makes Fuzzer tests runnable with
-# Epsilon itself.
-TEST_OPTS="-Xms256m -Xmx256m -XX:+AlwaysPreTouch -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC"
+# Be very aggressive about the used heap size. If a candidate fuzzer test allocates
+# a lot of data -- even if those allocations are not retained -- crash it by using
+# Epsilon, which would discard the candidate. The real test would run with larger Xmx
+# to provide larger safety margin. This also makes Fuzzer tests runnable with Epsilon
+# itself. Also, shun any GC output to avoid contaminating the golden VM output.
+TEST_OPTS="-Xms256m -Xmx256m -XX:+AlwaysPreTouch -Xlog:gc*=error -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC"
 
 # Maximum test running time to be considered stable.
 # Note it covers for generated tests that never finish, and also for tests that would
@@ -28,7 +28,7 @@ while true; do
   rm -f *.java Fuzzer* *.out
   ruby -I$R/rb $R/rb/Fuzzer.rb -f $R/rb/config.yml > Test.java
   cp ../FuzzerUtils.class .
-  javac --release 8 Test.java
+  javac -J-Xmx512m -J-XX:ActiveProcessorCount=1 --release 8 Test.java
 
   # Trial balloon: does it timeout in C2?
   timeout $C2_TIMEOUT java $TEST_OPTS -XX:-TieredCompilation Test > /dev/null

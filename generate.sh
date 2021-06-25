@@ -44,8 +44,3 @@ seq -w 1 $NUM_TESTS | xargs -n 1 -P $PARALLEL -I TESTID bash -c "cp $R/rb/Fuzzer
 seq -w 1 $NUM_TESTS | xargs -n 1 -P $PARALLEL -I TESTID bash -c "cp $R/rb/FuzzerUtils.java $OUTDIR_JDK_8/TESTID/"
 
 echo
-
-rm -f *.sfs
-mksquashfs $OUTDIR_JDK_X  fuzzer-tests-jdkX.sfs  -comp xz
-mksquashfs $OUTDIR_JDK_11 fuzzer-tests-jdk11.sfs -comp xz
-mksquashfs $OUTDIR_JDK_8  fuzzer-tests-jdk8.sfs  -comp xz

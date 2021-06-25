@@ -1,14 +1,11 @@
 #!/bin/bash
 set -u
 
-rm tests.tar.xz
+OUTDIR_JDK_X=tests-jdkX/
+OUTDIR_JDK_11=tests-jdk11/
+OUTDIR_JDK_8=tests-jdk8/
 
-find tests/ -type f | \
-  awk -F '/' '{ k = $(NF); sub(/ /, "", k); print k " " $L; }' | \
-  sort | \
-  cut -d" " -f 2- > list.txt
-
-tar -c -f tests.tar -T list.txt
-rm list.txt
-
-pxz -9 tests.tar
+rm -f *.sfs
+mksquashfs $OUTDIR_JDK_X  fuzzer-tests-jdkX.sfs  -comp xz
+mksquashfs $OUTDIR_JDK_11 fuzzer-tests-jdk11.sfs -comp xz
+mksquashfs $OUTDIR_JDK_8  fuzzer-tests-jdk8.sfs  -comp xz
