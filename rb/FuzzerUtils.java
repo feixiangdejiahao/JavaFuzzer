@@ -176,7 +176,7 @@ public class FuzzerUtils {
     public static void init(Object[] a, Object seed) {
         for (int j = 0; j < a.length; j++)
             try {
-                a[j] = seed.getClass().newInstance();
+                a[j] = seed.getClass().getDeclaredConstructor().newInstance();
             } catch (Exception ex) {
                 a[j] = seed;
             }

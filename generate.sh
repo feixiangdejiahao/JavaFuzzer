@@ -44,3 +44,4 @@ seq -w 1 $NUM_TESTS | xargs -n 1 -P $PARALLEL -I TESTID bash -c "cp $R/rb/Fuzzer
 seq -w 1 $NUM_TESTS | xargs -n 1 -P $PARALLEL -I TESTID bash -c "cp $R/rb/FuzzerUtils.java $OUTDIR_JDK_8/TESTID/"
 
 echo
+. package.sh

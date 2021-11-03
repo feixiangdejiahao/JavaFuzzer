@@ -18,7 +18,6 @@ mkdir $OUTDIR
 cp $R/rb/FuzzerUtils.java $OUTDIR
 cd $OUTDIR
 javac --release 8 FuzzerUtils.java
-#javac FuzzerUtils.java
 cd ..
 
 seq -w 1 $NUM_TESTS | xargs -n 1 -P $PARALLEL -I TESTID bash -c "mkdir $OUTDIR/TESTID; cd $OUTDIR/TESTID; $R/generate-one-faulty.sh $R"
